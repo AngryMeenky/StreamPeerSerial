@@ -5,8 +5,8 @@
 /*                           GODOT ENGINE                                */
 /*                      https://godotengine.org                          */
 /*************************************************************************/
-/* Copyright (c) 2007-2022 Juan Linietsky, Ariel Manzur.                 */
-/* Copyright (c) 2014-2022 Godot Engine contributors (cf. AUTHORS.md).   */
+/* Copyright (c) 2007-2023 Juan Linietsky, Ariel Manzur.                 */
+/* Copyright (c) 2014-2023 Godot Engine contributors (cf. AUTHORS.md).   */
 /*                                                                       */
 /* Permission is hereby granted, free of charge, to any person obtaining */
 /* a copy of this software and associated documentation files (the       */
@@ -28,15 +28,19 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                */
 /*************************************************************************/
 
-#ifndef SERIAL_PORT_H
-#define SERIAL_PORT_H
+#ifndef STREAM_PEER_SERIAL_H
+#define STREAM_PEER_SERIAL_H
 
 #ifdef GDEXTENSION
+#define GDEXT_OVERRIDE
 #include <godot_cpp/templates/vector.hpp>
+#include <godot_cpp/classes/stream_peer.hpp>
 #include <godot_cpp/variant/builtin_types.hpp>
 
 using namespace godot;
 #else
+#define GDEXT_OVERRIDE override
+#include "core/io/stream_peer.h"
 #include "core/string/ustring.h"
 #include "core/templates/vector.h"
 #include "core/variant/array.h"
@@ -50,8 +54,8 @@ using namespace godot;
 
 using namespace serial;
 
-class SerialPort : public Object {
-	GDCLASS(SerialPort, Object);
+class StreamPeerSerial : public StreamPeer {
+	GDCLASS(StreamPeerSerial, StreamPeer);
 
 	static void _thread_func(void *p_user_data);
 
@@ -90,7 +94,7 @@ public:
 		FLOWCONTROL_HARDWARE = flowcontrol_hardware,
 	};
 
-	SerialPort(const String &port = "",
+  StreamPeerSerial(const String &port = "",
 			uint32_t baudrate = 9600,
 			uint32_t timeout = 0,
 			ByteSize bytesize = BYTESIZE_8,
@@ -98,9 +102,17 @@ public:
 			StopBits stopbits = STOPBITS_1,
 			FlowControl flowcontrol = FLOWCONTROL_NONE);
 
-	~SerialPort();
+	~StreamPeerSerial();
 
 	static Dictionary list_ports();
+
+ 	Error put_data(const uint8_t *p_data, int p_bytes) GDEXT_OVERRIDE;
+	Error put_partial_data(const uint8_t *p_data, int p_bytes, int &r_sent) GDEXT_OVERRIDE;
+
+	Error get_data(uint8_t *p_buffer, int p_bytes) GDEXT_OVERRIDE;
+	Error get_partial_data(uint8_t *p_buffer, int p_bytes, int &r_received) GDEXT_OVERRIDE;
+
+	int get_available_bytes() const GDEXT_OVERRIDE;
 
 	bool is_in_error() { return is_open() && !fine_working; }
 	inline String get_last_error() { return error_message; }
@@ -115,19 +127,13 @@ public:
 
 	void close();
 
-	size_t available();
-
 	bool wait_readable();
 
 	void wait_byte_times(size_t count);
 
 	PackedByteArray read_raw(size_t size = 1);
 
-	String read_str(size_t size = 1, bool utf8_encoding = false);
-
 	size_t write_raw(const PackedByteArray &data);
-
-	size_t write_str(const String &data, bool utf8_encoding = false);
 
 	String read_line(size_t size = 65535, String eol = "\n", bool utf8_encoding = false);
 	PackedStringArray read_lines(size_t size = 65535, String eol = "\n", bool utf8_encoding = false);
@@ -190,9 +196,9 @@ protected:
 	static void _bind_methods();
 };
 
-VARIANT_ENUM_CAST(SerialPort::ByteSize);
-VARIANT_ENUM_CAST(SerialPort::Parity);
-VARIANT_ENUM_CAST(SerialPort::StopBits);
-VARIANT_ENUM_CAST(SerialPort::FlowControl);
+VARIANT_ENUM_CAST(StreamPeerSerial::ByteSize);
+VARIANT_ENUM_CAST(StreamPeerSerial::Parity);
+VARIANT_ENUM_CAST(StreamPeerSerial::StopBits);
+VARIANT_ENUM_CAST(StreamPeerSerial::FlowControl);
 
-#endif // SERIAL_PORT_H
+#endif // STREAM_PEER_SERIAL_H

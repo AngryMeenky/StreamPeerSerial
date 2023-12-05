@@ -30,17 +30,17 @@
 
 #include "register_types.h"
 
-#include "serial_port.h"
+#include "stream_peer_serial.h"
 
-void initialize_serial_port_module(ModuleInitializationLevel p_level) {
+void initialize_stream_peer_serial_module(ModuleInitializationLevel p_level) {
 	if (p_level != MODULE_INITIALIZATION_LEVEL_SCENE) {
 		return;
 	}
 
-	GDREGISTER_CLASS(SerialPort);
+	GDREGISTER_CLASS(StreamPeerSerial);
 }
 
-void uninitialize_serial_port_module(ModuleInitializationLevel p_level) {
+void uninitialize_stream_peer_serial_module(ModuleInitializationLevel p_level) {
 	if (p_level != MODULE_INITIALIZATION_LEVEL_SCENE) {
 		return;
 	}
@@ -56,8 +56,8 @@ extern "C" {
 GDExtensionBool GDE_EXPORT serialport_lib_init(const GDExtensionInterfaceGetProcAddress p_get_proc_addr, GDExtensionClassLibraryPtr p_library, GDExtensionInitialization *r_initialization) {
 	godot::GDExtensionBinding::InitObject init_obj(p_get_proc_addr, p_library, r_initialization);
 
-	init_obj.register_initializer(initialize_serial_port_module);
-	init_obj.register_terminator(uninitialize_serial_port_module);
+	init_obj.register_initializer(initialize_stream_peer_serial_module);
+	init_obj.register_terminator(uninitialize_stream_peer_serial_module);
 	init_obj.set_minimum_library_initialization_level(MODULE_INITIALIZATION_LEVEL_SCENE);
 
 	return init_obj.init();

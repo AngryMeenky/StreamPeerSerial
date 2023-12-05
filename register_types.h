@@ -28,8 +28,8 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                */
 /*************************************************************************/
 
-#ifndef SERIAL_PORT_REGISTER_TYPES_H
-#define SERIAL_PORT_REGISTER_TYPES_H
+#ifndef STREAM_PEER_SERIAL_REGISTER_TYPES_H
+#define STREAM_PEER_SERIAL_REGISTER_TYPES_H
 
 #ifdef GDEXTENSION
 #include <godot_cpp/core/class_db.hpp>
@@ -39,7 +39,7 @@ using namespace godot;
 #include "modules/register_module_types.h"
 #endif
 
-void initialize_serial_port_module(ModuleInitializationLevel p_level);
-void uninitialize_serial_port_module(ModuleInitializationLevel p_level);
+void initialize_stream_peer_serial_module(ModuleInitializationLevel p_level);
+void uninitialize_stream_peer_serial_module(ModuleInitializationLevel p_level);
 
-#endif // SERIAL_PORT_REGISTER_TYPES_H
+#endif // STREAM_PEER_SERIAL_REGISTER_TYPES_H

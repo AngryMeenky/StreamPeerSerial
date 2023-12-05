@@ -9,7 +9,7 @@ env.Append(CPPPATH=[".", "serial/include"])
 
 addon_sources = [
     "register_types.cpp",
-    "serial_port.cpp"
+    "stream_peer_serial.cpp"
 ]
 
 serial_dir = "serial/"
@@ -34,7 +34,7 @@ print("Build for {0}.".format(env["platform"]))
 serial_sources = [serial_dir + file for file in serial_sources]
 
 addon_sources.append(serial_sources)
-addon_name = "serialport"
+addon_name = "StreamPeerSerial"
 addon_path = "gdextension_build/example/addons/{}".format(addon_name)
 if env["platform"] == "macos":
     library = env.SharedLibrary(
