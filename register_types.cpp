@@ -53,7 +53,7 @@ void uninitialize_stream_peer_serial_module(ModuleInitializationLevel p_level) {
 
 extern "C" {
 // Initialization.
-GDExtensionBool GDE_EXPORT serialport_lib_init(const GDExtensionInterfaceGetProcAddress p_get_proc_addr, GDExtensionClassLibraryPtr p_library, GDExtensionInitialization *r_initialization) {
+GDExtensionBool GDE_EXPORT stream_peer_serial_library_init(const GDExtensionInterfaceGetProcAddress p_get_proc_addr, GDExtensionClassLibraryPtr p_library, GDExtensionInitialization *r_initialization) {
 	godot::GDExtensionBinding::InitObject init_obj(p_get_proc_addr, p_library, r_initialization);
 
 	init_obj.register_initializer(initialize_stream_peer_serial_module);
