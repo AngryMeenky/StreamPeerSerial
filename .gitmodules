@@ -6,4 +6,4 @@
 	url = https://github.com/godotengine/godot-cpp.git
 [submodule "gdextension_build/example"]
 	path = gdextension_build/example
-	url = https://github.com/matrixant/serial_port_example.git
+	url = https://github.com/AngryMeenky/serial_port_example.git
