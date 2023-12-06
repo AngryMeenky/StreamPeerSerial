@@ -1,14 +1,14 @@
 <?xml version="1.0" encoding="UTF-8" ?>
-<class name="SerialPort" inherits="Object" version="4.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../../doc/class.xsd">
+<class name="StreamPeerSerial" inherits="StreamPeer" version="4.1" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../../doc/class.xsd">
 	<brief_description>
 		Support serial port communication.
 	</brief_description>
 	<description>
-		The [SerialPort] enables the serial port communication with your serial devices.
-		[b]Note:[/b] When using on linux, insure you have the promission to operate the serial port.
+		The [StreamPeerSerial] enables serial communication within godot on Linux, Windows, and MacOS.
+		[b]Note:[/b] When using on linux, ensure you have the required permissions to access the serial device.
 	</description>
 	<tutorials>
-		<link title="SerialPort example">https://github.com/matrixant/serial_port_example</link>
+		<link title="StreamPeerSerial example">https://github.com/AngryMeenky/serial_port_example</link>
 	</tutorials>
 	<members>
 		<member name="port" type="String" setter="set_port" getter="get_port" default="&quot;&quot;">
@@ -33,22 +33,22 @@
 	<signals>
 		<signal name="got_error">
 			<description>
-				Emitted when there is an error.
+				Emitted when there an error occurs.
 			</description>
 		</signal>
 		<signal name="opened">
 			<description>
-				Emitted when the serial port opened.
+				Emitted when the serial port is opened.
 			</description>
 		</signal>
 		<signal name="data_received">
 			<description>
-				Emitted when the serial receive any data.
+				Emitted when the serial port receives any data while monitoring.
 			</description>
 		</signal>
 		<signal name="closed">
 			<description>
-				Emitted when the serial port closed.
+				Emitted when the serial port is closed.
 			</description>
 		</signal>
 	</signals>
@@ -103,18 +103,18 @@
 		<method name="list_ports" qualifiers="static">
 			<return type="Dictionary"/>
 			<description>
-				Returns a [Dictionary] contains the serial ports information, the information key with [code]port[/code] name.
+				Returns a [Dictionary] containing information about the available serial ports. The keys are the  port names and the values contain the description([code]desc[/code]) and hardware ID([code]hw_id[/code]) of the serial port.
 			</description>
 		</method>
 		<method name="start_monitoring">
 			<return type="int" enum="Error" />
 			<param index="0" name="interval_in_usec" type="int" />
 			<description>
-				Returns [enum Error] when the monitoring already started, the [code]interval_in_usec[/code] set the monitoring interval.
-				When start monitoring, a data receive thread will be started. Any data received will emit the [signal data_received] signal.
+				Returns [enum Error] when the monitoring already started, the [code]interval_in_usec[/code] sets the monitoring interval.
+				When monitoring begins a background thread will be spawned to read from the serial port. This is done in a blocking manner no more often than once every [code]interval_in_usec[/code]. Any data received until [method stop_monitoring] is called will cause the [signal data_received] signal to be emitted.
 				[b]Example:[/b]
 				[codeblock]
-				var serial = SerialPort.new()
+				var serial = StreamPeerSerial.new()
 
 				func _ready():
 				    serial.port = "COM2"
@@ -122,7 +122,7 @@
 				    serial.data_received.connect(_on_data_received)
 				    serial.start_monitoring(20000)
 				    serial.open()
-				
+
 				func _on_data_received(data):
 				    print("Receive %d bytes: %s" % [data.size(), data])
 				[/codeblock]
@@ -130,13 +130,13 @@
 		</method>
 		<method name="stop_monitoring">
 			<description>
-				Stop the data monitoring.
+				Stop the monitoring thread. No additional data will be automatically read from the serial port.
 			</description>
 		</method>
 		<method name="is_in_error">
 			<return type="bool" />
 			<description>
-				Whether the serial port is in error, use [method get_last_error] to find the latest error message.
+				Returns the error state of the serial port. Use the [method get_last_error] method to retrieve the last error message.
 			</description>
 		</method>
 		<method name="open">
@@ -157,18 +157,18 @@
 				Close the serial port.
 			</description>
 		</method>
-		<method name="available">
+		<method name="get_available_bytes">
 			<return type="int" />
 			<description>
-				Return the received byte num.
-				[b]Note:[/b] If you are using [method start_monitoring] to get data, needless to use this method.
+				Return the number of bytes that can be read without blocking.
+				[b]Note:[/b] THe return value is unreliable if you are using [method start_monitoring] to get data.
 			</description>
 		</method>
 		<method name="wait_readable">
 			<return type="bool" />
 			<description>
 				Block until there is serial data to read or [code]timeout[/code](Set by [method set_timeout]) number of milliseconds have elapsed.
-				The return value is true when the function exits with the port in a readable state, false otherwise (due to timeout or select interruption).
+				Returns [code]true[/code] if bytes became available and [code]false[/code] otherwise.
 				[b]Note:[/b] Not implemented on Windows.
 			</description>
 		</method>
@@ -176,25 +176,9 @@
 			<return type="bool" />
 			<param index="0" name="count" type="int" />
 			<description>
-				Block for a period of time corresponding to the transmission time of count characters at present serial settings.
+				Block for a period of time corresponding to the transmission time of [code]count[/code] characters at present serial settings.
 				This may be used in conjunction with [method wait_readable] to read larger blocks of data from the port.
 				[b]Note:[/b] Not implemented on Windows.
-			</description>
-		</method>
-		<method name="read_str">
-			<return type="int" />
-			<param index="0" name="size" type="int" default="1" />
-			<param index="1" name="utf8_encoding" type="bool" default="false" />
-			<description>
-				Read string from the serial port. When expect an utf-8 string, let the [code]utf8_encoding[/code] be [code]true[/code]. The size is the maximum length of the string.
-			</description>
-		</method>
-		<method name="write_str">
-			<return type="int" />
-			<param index="0" name="content" type="String" />
-			<param index="1" name="utf8_encoding" type="bool" default="false" />
-			<description>
-				Write string to the serial port. When expect an utf-8 string, let the [code]utf8_encoding[/code] be [code]true[/code].
 			</description>
 		</method>
 		<method name="read_raw">
@@ -206,8 +190,7 @@
 		</method>
 		<method name="write_raw">
 			<return type="int" />
-			<param index="0" name="content" type="String" />
-			<param index="1" name="utf8_encoding" type="bool" default="false" />
+			<param index="0" name="data" type="PackedByteArray" />
 			<description>
 				Write raw byte data to the serial port.
 			</description>
@@ -218,8 +201,8 @@
 			<param index="1" name="eol" type="String" default="&quot;\n&quot;" />
 			<param index="2" name="utf8_encoding" type="bool" default="false" />
 			<description>
-				Read a string line end with the [code]eol[/code] from the serial port. When expect an utf-8 string, let the [code]utf8_encoding[/code] be [code]true[/code]. The max_len is the maximum length of the string.
-				[b]Note:[/b] The default [code]eol[/code] is [code]\n[/code].
+				Read a string from the serial port until [code]eol[/code] is encountered. The maximum length of the string is constrained by [code]max_len[/code].
+				[b]Note:[/b] The default [code]eol[/code] is [code]"\n"[/code].
 			</description>
 		</method>
 		<method name="read_lines">
@@ -228,8 +211,8 @@
 			<param index="1" name="eol" type="String" default="&quot;\n&quot;" />
 			<param index="2" name="utf8_encoding" type="bool" default="false" />
 			<description>
-				Read multi lines of string which end with the [code]eol[/code] from the serial port. When expect an utf-8 string, let the [code]utf8_encoding[/code] be [code]true[/code]. The max_len is the maximum length of the total lines of string.
-				[b]Note:[/b] The default [code]eol[/code] is [code]\n[/code].
+				Read multiple strings which end with the [code]eol[/code] from the serial port. The maximum length of each string is constrained by [code]max_len[/code].
+				[b]Note:[/b] The default [code]eol[/code] is [code]"\n"[/code].
 			</description>
 		</method>
 		<method name="set_port">
@@ -237,6 +220,7 @@
 			<param index="0" name="port" type="String" />
 			<description>
 				Set the serial port name.
+				[b]Note:[/b] Use [method list_ports] to get a [Dictionary] containing information about the available serial ports.
 			</description>
 		</method>
 		<method name="get_port">
