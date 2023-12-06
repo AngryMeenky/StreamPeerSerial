@@ -32,14 +32,12 @@
 #define STREAM_PEER_SERIAL_H
 
 #ifdef GDEXTENSION
-#define GDEXT_OVERRIDE
 #include <godot_cpp/templates/vector.hpp>
-#include <godot_cpp/classes/stream_peer.hpp>
 #include <godot_cpp/variant/builtin_types.hpp>
+#include <godot_cpp/classes/stream_peer_extension.hpp>
 
 using namespace godot;
 #else
-#define GDEXT_OVERRIDE override
 #include "core/io/stream_peer.h"
 #include "core/string/ustring.h"
 #include "core/templates/vector.h"
@@ -54,8 +52,8 @@ using namespace godot;
 
 using namespace serial;
 
-class StreamPeerSerial : public StreamPeer {
-	GDCLASS(StreamPeerSerial, StreamPeer);
+class StreamPeerSerial : public StreamPeerExtension {
+	GDCLASS(StreamPeerSerial, StreamPeerExtension);
 
 	static void _thread_func(void *p_user_data);
 
@@ -106,13 +104,12 @@ public:
 
 	static Dictionary list_ports();
 
- 	Error put_data(const uint8_t *p_data, int p_bytes) GDEXT_OVERRIDE;
-	Error put_partial_data(const uint8_t *p_data, int p_bytes, int &r_sent) GDEXT_OVERRIDE;
+  Error _get_data(uint8_t *p_buffer, int32_t r_bytes, int32_t *r_received) override;
+  Error _get_partial_data(uint8_t *p_buffer, int r_bytes, int32_t *r_received) override;
+  Error _put_data(const uint8_t *p_data, int32_t p_bytes, int32_t *r_sent) override;
+  Error _put_partial_data(const uint8_t *p_data, int32_t p_bytes, int32_t *r_sent) override;
 
-	Error get_data(uint8_t *p_buffer, int p_bytes) GDEXT_OVERRIDE;
-	Error get_partial_data(uint8_t *p_buffer, int p_bytes, int &r_received) GDEXT_OVERRIDE;
-
-	int get_available_bytes() const GDEXT_OVERRIDE;
+	int32_t _get_available_bytes() const override;
 
 	bool is_in_error() { return is_open() && !fine_working; }
 	inline String get_last_error() { return error_message; }

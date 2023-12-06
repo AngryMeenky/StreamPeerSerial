@@ -108,8 +108,8 @@ void StreamPeerSerial::_thread_func(void *p_user_data) {
 		time_point time_start = system_clock::now();
 
 		if (serial_port->fine_working) {
-			if (serial_port->is_open() && serial_port->get_available_bytes() > 0) {
-				serial_port->call_deferred("_data_received", serial_port->read_raw(serial_port->get_available_bytes()));
+			if (serial_port->is_open() && serial_port->_get_available_bytes() > 0) {
+				serial_port->call_deferred("_data_received", serial_port->read_raw(serial_port->_get_available_bytes()));
 			}
 		}
 		time_t time_elapsed = duration_cast<microseconds>(system_clock::now() - time_start).count();
@@ -167,7 +167,7 @@ void StreamPeerSerial::close() {
 	emit_signal("closed", serial->getPort().c_str());
 }
 
-int StreamPeerSerial::get_available_bytes() const {
+int32_t StreamPeerSerial::_get_available_bytes() const {
 	try {
 		return serial->available();
 	} catch (IOException &e) {
@@ -228,39 +228,48 @@ PackedByteArray StreamPeerSerial::read_raw(size_t size) {
 	return raw;
 }
 
-Error StreamPeerSerial::get_data(uint8_t *p_buffer, int p_bytes) {
-  int recv = 0;
-  Error result = get_partial_data(p_buffer, p_bytes, recv);
-  if(result == OK && recv != p_bytes) {
-    result = ERR_BUSY;
+Error StreamPeerSerial::_get_data(uint8_t *p_buffer, int32_t bytes, int32_t *r_received) {
+  if(bytes < 0) {
+    return ERR_PARAMETER_RANGE_ERROR;
   }
 
-  return result;
-}
-
-Error StreamPeerSerial::get_partial_data(uint8_t *p_buffer, int p_bytes, int &r_received) {
   Error result = OK;
   try {
-    if((r_received = static_cast<int>(serial->read(p_buffer, p_bytes))) == 0) {
+    if((*r_received = serial->read(p_buffer, bytes)) == 0) {
       result = ERR_BUSY;
     }
   } catch (PortNotOpenedException &e) {
     _on_error(__FUNCTION__, e.what());
     result = ERR_FILE_CANT_OPEN;
+    *r_received = 0;
   } catch (IOException &e) {
     _on_error(__FUNCTION__, e.what());
     result = ERR_FILE_CANT_READ;
+    *r_received = 0;
   } catch (SerialException &e) {
     _on_error(__FUNCTION__, e.what());
     result = ERR_FILE_CORRUPT;
+    *r_received = 0;
   } catch (...) {
     _on_error(__FUNCTION__, "Unknown error");
     result = ERR_UNAVAILABLE;
+    *r_received = 0;
   }
 
   return result;
 }
 
+Error StreamPeerSerial::_get_partial_data(uint8_t *p_buffer, int32_t bytes, int32_t *r_received) {
+  auto avail = _get_available_bytes();
+  if(avail <= 0) {
+    return ERR_BUSY;
+  }
+  else if(avail < bytes) {
+    bytes = avail;
+  }
+
+  return _get_data(p_buffer, bytes, r_received);
+}
 
 size_t StreamPeerSerial::write_raw(const PackedByteArray &data) {
 	try {
@@ -278,34 +287,66 @@ size_t StreamPeerSerial::write_raw(const PackedByteArray &data) {
 	return 0;
 }
 
-Error StreamPeerSerial::put_data(const uint8_t *p_data, int p_bytes) {
-  int sent = 0;
-  Error result = put_partial_data(p_data, p_bytes, sent);
-  if(result == OK && sent != p_bytes) {
-    result = ERR_BUSY;
+Error StreamPeerSerial::_put_data(const uint8_t *p_data, int32_t bytes, int32_t *r_sent) {
+  if(bytes < 0) {
+    return ERR_PARAMETER_RANGE_ERROR;
+  }
+
+  Error result = OK;
+	try {
+    do {
+	  	if(int sent = static_cast<int>(serial->write(p_data, bytes)); sent == 0) {
+        std::this_thread::sleep_for(milliseconds(serial->getTimeout().write_timeout_constant));
+      }
+      else {
+        *r_sent += sent;
+        p_data += sent;
+        bytes -= sent;
+      }
+    } while(bytes > 0);
+  } catch (PortNotOpenedException &e) {
+    _on_error(__FUNCTION__, e.what());
+    result = ERR_FILE_CANT_OPEN;
+    *r_sent = 0;
+  } catch (IOException &e) {
+    _on_error(__FUNCTION__, e.what());
+    result = ERR_FILE_CANT_WRITE;
+    *r_sent = 0;
+  } catch (SerialException &e) {
+    _on_error(__FUNCTION__, e.what());
+    result = ERR_FILE_CORRUPT;
+    *r_sent = 0;
+  } catch (...) {
+    _on_error(__FUNCTION__, "Unknown error");
+    result = ERR_UNAVAILABLE;
+    *r_sent = 0;
   }
 
 	return result;
 }
 
-Error StreamPeerSerial::put_partial_data(const uint8_t *p_data, int p_bytes, int &r_sent) {
+Error StreamPeerSerial::_put_partial_data(const uint8_t *p_data, int32_t bytes, int32_t *r_sent) {
   Error result = OK;
 	try {
-		if((r_sent = static_cast<int>(serial->write(p_data, p_bytes))) == 0) {
+		if((*r_sent = static_cast<int>(serial->write(p_data, bytes))) == 0) {
       result = ERR_BUSY;
     }
   } catch (PortNotOpenedException &e) {
     _on_error(__FUNCTION__, e.what());
     result = ERR_FILE_CANT_OPEN;
+    *r_sent = 0;
   } catch (IOException &e) {
     _on_error(__FUNCTION__, e.what());
     result = ERR_FILE_CANT_WRITE;
+    *r_sent = 0;
   } catch (SerialException &e) {
     _on_error(__FUNCTION__, e.what());
     result = ERR_FILE_CORRUPT;
+    *r_sent = 0;
   } catch (...) {
     _on_error(__FUNCTION__, "Unknown error");
     result = ERR_UNAVAILABLE;
+    *r_sent = 0;
   }
 
 	return result;
@@ -692,7 +733,6 @@ void StreamPeerSerial::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("is_open"), &StreamPeerSerial::is_open);
 	ClassDB::bind_method(D_METHOD("close"), &StreamPeerSerial::close);
 
-	ClassDB::bind_method(D_METHOD("get_available_bytes"), &StreamPeerSerial::get_available_bytes);
 	ClassDB::bind_method(D_METHOD("wait_readable"), &StreamPeerSerial::wait_readable);
 	ClassDB::bind_method(D_METHOD("wait_byte_times", "count"), &StreamPeerSerial::wait_byte_times);
 	ClassDB::bind_method(D_METHOD("read_raw", "size"), &StreamPeerSerial::read_raw, DEFVAL(1));
