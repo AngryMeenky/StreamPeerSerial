@@ -33,6 +33,8 @@
 #ifdef GDEXTENSION
 #include <godot_cpp/classes/os.hpp>
 #include <godot_cpp/core/class_db.hpp>
+#include <godot_cpp/templates/vector.hpp>
+#include <godot_cpp/variant/utility_functions.hpp>
 
 using namespace godot;
 #else
@@ -108,8 +110,8 @@ void StreamPeerSerial::_thread_func(void *p_user_data) {
 		time_point time_start = system_clock::now();
 
 		if (serial_port->fine_working) {
-			if (serial_port->is_open() && serial_port->_get_available_bytes() > 0) {
-				serial_port->call_deferred("_data_received", serial_port->read_raw(serial_port->_get_available_bytes()));
+			if (serial_port->is_open() && serial_port->get_available_bytes() > 0) {
+				serial_port->call_deferred("_data_received", serial_port->read_raw(serial_port->get_available_bytes()));
 			}
 		}
 		time_t time_elapsed = duration_cast<microseconds>(system_clock::now() - time_start).count();
@@ -167,7 +169,131 @@ void StreamPeerSerial::close() {
 	emit_signal("closed", serial->getPort().c_str());
 }
 
-int32_t StreamPeerSerial::_get_available_bytes() const {
+Error StreamPeerSerial::_put_bytes(const uint8_t *ptr, int32_t bytes) {
+  Error result = OK;
+	try {
+    do {
+	  	if(int sent = static_cast<int>(serial->write(ptr, bytes)); sent == 0) {
+        std::this_thread::sleep_for(milliseconds(serial->getTimeout().write_timeout_constant));
+      }
+      else {
+        ptr += sent;
+        bytes -= sent;
+      }
+    } while(bytes > 0);
+  } catch (PortNotOpenedException &e) {
+    _on_error(__FUNCTION__, e.what());
+    result = ERR_FILE_CANT_OPEN;
+  } catch (IOException &e) {
+    _on_error(__FUNCTION__, e.what());
+    result = ERR_FILE_CANT_WRITE;
+  } catch (SerialException &e) {
+    _on_error(__FUNCTION__, e.what());
+    result = ERR_FILE_CORRUPT;
+  } catch (...) {
+    _on_error(__FUNCTION__, "Unknown error");
+    result = ERR_UNAVAILABLE;
+  }
+
+	return result;
+
+}
+
+Error StreamPeerSerial::put_data(const PackedByteArray &data) {
+  return _put_bytes(data.ptr(), data.size());
+}
+
+Array StreamPeerSerial::put_partial_data(const PackedByteArray &data) {
+  Array result;
+	try {
+		if(auto sent = serial->write(data.ptr(), data.size()); sent == 0) {
+      result = Array(data);
+    }
+    else if(sent < data.size()) {
+      result = Array(data.slice(sent));
+    }
+  } catch (PortNotOpenedException &e) {
+    _on_error(__FUNCTION__, e.what());
+    result = Array(data);
+  } catch (IOException &e) {
+    _on_error(__FUNCTION__, e.what());
+    result = Array(data);
+  } catch (SerialException &e) {
+    _on_error(__FUNCTION__, e.what());
+    result = Array(data);
+  } catch (...) {
+    _on_error(__FUNCTION__, "Unknown error");
+    result = Array(data);
+  }
+
+	return result;
+}
+
+Error StreamPeerSerial::_get_bytes(uint8_t *ptr, int32_t bytes, int32_t &count) {
+  count = 0;
+
+  if(bytes <= 0) {
+    return ERR_PARAMETER_RANGE_ERROR;
+  }
+
+  Error result = OK;
+  try {
+    do {
+      if(auto received = serial->read(ptr, bytes); received == 0) {
+        std::this_thread::sleep_for(milliseconds(serial->getTimeout().read_timeout_constant));
+      }
+      else {
+        ptr += received;
+        bytes -= received;
+        count += received;
+      }
+    } while(bytes > 0);
+  } catch (PortNotOpenedException &e) {
+    _on_error(__FUNCTION__, e.what());
+    result = ERR_FILE_CANT_OPEN;
+  } catch (IOException &e) {
+    _on_error(__FUNCTION__, e.what());
+    result = ERR_FILE_CANT_READ;
+  } catch (SerialException &e) {
+    _on_error(__FUNCTION__, e.what());
+    result = ERR_CANT_ACQUIRE_RESOURCE;
+  } catch (...) {
+    _on_error(__FUNCTION__, "Unknown error");
+    result = FAILED;
+  }
+
+  return result;
+}
+
+Array StreamPeerSerial::get_data(int32_t bytes) {
+  if(bytes < 0) {
+    return Array();
+  }
+
+  int32_t count;
+  PackedByteArray buffer;
+  buffer.resize(bytes);
+  (void) _get_bytes(buffer.ptrw(), bytes, count);
+  if(count != bytes) {
+    buffer.resize(count);
+  }
+
+  return Array(buffer);
+}
+
+Array StreamPeerSerial::get_partial_data(int32_t bytes) {
+  auto avail = get_available_bytes();
+  if(avail <= 0) {
+    return Array();
+  }
+  else if(avail < bytes) {
+    bytes = avail;
+  }
+
+  return get_data(bytes);
+}
+
+int32_t StreamPeerSerial::get_available_bytes() const {
 	try {
 		return serial->available();
 	} catch (IOException &e) {
@@ -179,6 +305,289 @@ int32_t StreamPeerSerial::_get_available_bytes() const {
 	}
 
 	return 0;
+}
+
+void StreamPeerSerial::put_8(int32_t value) {
+  put_u8(value & 0xFF);
+}
+
+void StreamPeerSerial::put_u8(uint32_t value) {
+  auto val = static_cast<uint8_t>(value);
+  (void) _put_bytes(&val, 1);
+}
+
+void StreamPeerSerial::put_16(int32_t value) {
+  put_u16(static_cast<uint32_t>(value));
+}
+
+void StreamPeerSerial::put_u16(uint32_t value) {
+  uint8_t buffer[2];
+  if(big_endian) {
+    buffer[0] = value >> 8;
+    buffer[1] = value & 0xFF;
+  }
+  else {
+    buffer[0] = value & 0xFF;
+    buffer[1] = value >> 8;
+  }
+
+  (void) _put_bytes(&buffer[0], sizeof(buffer));
+}
+
+void StreamPeerSerial::put_32(int32_t value) {
+  put_u32(static_cast<uint32_t>(value));
+}
+
+void StreamPeerSerial::put_u32(uint32_t value) {
+  uint8_t buffer[4];
+  if(big_endian) {
+    buffer[0] = (value >> 24);
+    buffer[1] = (value >> 16) & 0xFF;
+    buffer[2] = (value >>  8) & 0xFF;
+    buffer[3] =  value        & 0xFF;
+  }
+  else {
+    buffer[0] =  value        & 0xFF;
+    buffer[1] = (value >>  8) & 0xFF;
+    buffer[2] = (value >> 16) & 0xFF;
+    buffer[3] = (value >> 24);
+  }
+
+  (void) _put_bytes(&buffer[0], sizeof(buffer));
+}
+
+void StreamPeerSerial::put_64(int64_t value) {
+  put_u64(static_cast<uint64_t>(value));
+}
+
+void StreamPeerSerial::put_u64(uint64_t value) {
+  uint8_t buffer[8];
+  if(big_endian) {
+    buffer[0] = (value >> 56);
+    buffer[1] = (value >> 48) & 0xFF;
+    buffer[2] = (value >> 40) & 0xFF;
+    buffer[3] = (value >> 32) & 0xFF;
+    buffer[4] = (value >> 24) & 0xFF;
+    buffer[5] = (value >> 16) & 0xFF;
+    buffer[6] = (value >>  8) & 0xFF;
+    buffer[7] =  value        & 0xFF;
+  }
+  else {
+    buffer[0] =  value        & 0xFF;
+    buffer[1] = (value >>  8) & 0xFF;
+    buffer[2] = (value >> 16) & 0xFF;
+    buffer[3] = (value >> 24) & 0xFF;
+    buffer[4] = (value >> 32) & 0xFF;
+    buffer[5] = (value >> 40) & 0xFF;
+    buffer[6] = (value >> 48) & 0xFF;
+    buffer[7] = (value >> 56);
+  }
+
+  (void) _put_bytes(&buffer[0], sizeof(buffer));
+}
+
+void StreamPeerSerial::put_float(double value) {
+  auto val = static_cast<float>(value);
+  auto ptr = reinterpret_cast<uint32_t *>(&val);
+  put_u32(*ptr);
+}
+
+void StreamPeerSerial::put_double(double value) {
+  auto ptr = reinterpret_cast<uint64_t *>(&value);
+  put_u64(*ptr);
+}
+
+void StreamPeerSerial::put_string(const String &value) {
+  auto buffer = value.to_ascii_buffer();
+  put_u32(buffer.size());
+  _put_bytes(buffer.ptr(), buffer.size());
+}
+
+void StreamPeerSerial::put_utf8_string(const String &value) {
+  auto buffer = value.to_utf8_buffer();
+  put_u32(buffer.size());
+  _put_bytes(buffer.ptr(), buffer.size());
+}
+
+void StreamPeerSerial::put_var(const Variant &value, bool full_objects) {
+  PackedByteArray data = full_objects ?
+                           UtilityFunctions::var_to_bytes_with_objects(value) :
+                           UtilityFunctions::var_to_bytes(value);
+  put_32(data.size());
+  _put_bytes(data.ptr(), data.size());
+}
+
+int8_t StreamPeerSerial::get_8(){
+  return static_cast<int8_t>(get_u8());
+}
+
+uint8_t StreamPeerSerial::get_u8() {
+  int32_t count;
+  uint8_t buffer = 0;
+  (void) _get_bytes(&buffer, 1, count);
+  return buffer;
+}
+
+int16_t StreamPeerSerial::get_16() {
+  return static_cast<int16_t>(get_u16());
+}
+
+uint16_t StreamPeerSerial::get_u16() {
+  uint8_t buffer[2];
+  int32_t count, offset = 0;
+
+  while(offset < static_cast<int32_t>(sizeof(buffer))) {
+    if(_get_bytes(&buffer[offset], static_cast<int32_t>(sizeof(buffer)) - offset, count) != OK) {
+      return 0;
+    }
+
+    offset += count;
+  }
+
+  if(big_endian) {
+    return (buffer[0] << 8) | buffer[1];
+  }
+  else {
+    return buffer[0] | (buffer[1] << 8);
+  }
+}
+
+int32_t StreamPeerSerial::get_32() {
+  return static_cast<int32_t>(get_u32());
+}
+
+uint32_t StreamPeerSerial::get_u32() {
+  uint8_t buffer[4];
+  int32_t count, offset = 0;
+
+  while(offset < static_cast<int32_t>(sizeof(buffer))) {
+    if(_get_bytes(&buffer[offset], static_cast<int32_t>(sizeof(buffer)) - offset, count) != OK) {
+      return 0;
+    }
+
+    offset += count;
+  }
+
+  if(big_endian) {
+    return (buffer[0] << 24) | (buffer[1] << 16) | (buffer[2] << 8) | buffer[3];
+  }
+  else {
+    return buffer[0] | (buffer[1] << 8) | (buffer[2] << 16) | (buffer[3] << 24);
+  }
+}
+
+int64_t StreamPeerSerial::get_64() {
+  return static_cast<int64_t>(get_u64());
+}
+
+uint64_t StreamPeerSerial::get_u64() {
+  uint8_t buffer[8];
+  int32_t count, offset = 0;
+
+  while(offset < static_cast<int32_t>(sizeof(buffer))) {
+    if(_get_bytes(&buffer[offset], static_cast<int32_t>(sizeof(buffer)) - offset, count) != OK) {
+      return 0;
+    }
+
+    offset += count;
+  }
+
+  if(big_endian) {
+    return (static_cast<int64_t>((buffer[0] << 24) | (buffer[1] << 16) |
+                                 (buffer[2] <<  8) |  buffer[3]      ) << 32) |
+            static_cast<int64_t>((buffer[4] << 24) | (buffer[5] << 16) |
+                                 (buffer[6] <<  8) |  buffer[7]      );
+  }
+  else {
+    return  static_cast<int64_t>( buffer[0]        | (buffer[1] <<  8) |
+                                 (buffer[2] << 16) | (buffer[3] << 24)) |
+           (static_cast<int64_t>( buffer[4]        | (buffer[5] <<  8) |
+                                 (buffer[6] << 16) | (buffer[7] << 24)) << 32);
+  }
+}
+
+double StreamPeerSerial::get_float() {
+  auto bits = get_u32();
+  auto ptr = reinterpret_cast<float *>(&bits);
+  return static_cast<double>(*ptr);
+}
+
+double StreamPeerSerial::get_double() {
+  auto bits = get_u64();
+  auto ptr = reinterpret_cast<double *>(&bits);
+  return *ptr;
+}
+
+String StreamPeerSerial::get_string(int32_t bytes) {
+  if(bytes < 0) {
+    bytes = get_32();
+  }
+
+  if(bytes == 0) {
+    return String();
+  }
+
+  Vector<uint8_t> buffer;
+  int32_t count;
+  buffer.resize(bytes + 1);
+  if(_get_bytes(buffer.ptrw(), bytes, count) != OK) {
+    return String();
+  }
+
+  // always ensure NUL termination
+  if(bytes > count) {
+    buffer.ptrw()[count] = 0;
+    buffer.resize(count + 1);
+  }
+  else {
+    buffer.ptrw()[bytes] = 0;
+  }
+
+  return String(reinterpret_cast<const char *>(buffer.ptr()));
+}
+
+String StreamPeerSerial::get_utf8_string(int32_t bytes) {
+  if(bytes < 0) {
+    bytes = get_32();
+  }
+
+  if(bytes == 0) {
+    return String();
+  }
+
+  Vector<uint8_t> buffer;
+  int32_t count;
+  buffer.resize(bytes + 1);
+  if(_get_bytes(buffer.ptrw(), bytes, count) != OK) {
+    return String();
+  }
+
+  // always ensure NUL termination
+  if(bytes > count) {
+    buffer.ptrw()[count] = 0;
+    buffer.resize(count + 1);
+  }
+  else {
+    buffer.ptrw()[bytes] = 0;
+  }
+
+  return String::utf8(reinterpret_cast<const char *>(buffer.ptr()), count);
+}
+
+Variant StreamPeerSerial::get_var(bool allow_objects) {
+  PackedByteArray buffer;
+  int32_t count;
+  buffer.resize(get_32());
+
+  if(_get_bytes(buffer.ptrw(), buffer.size(), count) == OK) {
+    if(buffer.size() != count) {
+      buffer.resize(count);
+    }
+    return allow_objects ? UtilityFunctions::bytes_to_var_with_objects(buffer) :
+                           UtilityFunctions::bytes_to_var(buffer);
+  }
+
+  return Variant();
 }
 
 bool StreamPeerSerial::wait_readable() {
@@ -209,11 +618,11 @@ void StreamPeerSerial::wait_byte_times(size_t count) {
 
 PackedByteArray StreamPeerSerial::read_raw(size_t size) {
 	PackedByteArray raw;
-	std::vector<uint8_t> buf_temp;
+  raw.resize(size);
 	try {
-		size_t bytes_read = serial->read(buf_temp, size);
-		if (bytes_read > 0 && raw.resize(bytes_read) == OK) {
-			memcpy(raw.ptrw(), (const char *)buf_temp.data(), bytes_read);
+		size_t bytes_read = serial->read(raw.ptrw(), size);
+		if(bytes_read >= 0 && raw.size() != bytes_read) {
+      raw.resize(bytes_read);
 		}
 	} catch (PortNotOpenedException &e) {
 		_on_error(__FUNCTION__, e.what());
@@ -226,49 +635,6 @@ PackedByteArray StreamPeerSerial::read_raw(size_t size) {
 	}
 
 	return raw;
-}
-
-Error StreamPeerSerial::_get_data(uint8_t *p_buffer, int32_t bytes, int32_t *r_received) {
-  if(bytes < 0) {
-    return ERR_PARAMETER_RANGE_ERROR;
-  }
-
-  Error result = OK;
-  try {
-    if((*r_received = serial->read(p_buffer, bytes)) == 0) {
-      result = ERR_BUSY;
-    }
-  } catch (PortNotOpenedException &e) {
-    _on_error(__FUNCTION__, e.what());
-    result = ERR_FILE_CANT_OPEN;
-    *r_received = 0;
-  } catch (IOException &e) {
-    _on_error(__FUNCTION__, e.what());
-    result = ERR_FILE_CANT_READ;
-    *r_received = 0;
-  } catch (SerialException &e) {
-    _on_error(__FUNCTION__, e.what());
-    result = ERR_FILE_CORRUPT;
-    *r_received = 0;
-  } catch (...) {
-    _on_error(__FUNCTION__, "Unknown error");
-    result = ERR_UNAVAILABLE;
-    *r_received = 0;
-  }
-
-  return result;
-}
-
-Error StreamPeerSerial::_get_partial_data(uint8_t *p_buffer, int32_t bytes, int32_t *r_received) {
-  auto avail = _get_available_bytes();
-  if(avail <= 0) {
-    return ERR_BUSY;
-  }
-  else if(avail < bytes) {
-    bytes = avail;
-  }
-
-  return _get_data(p_buffer, bytes, r_received);
 }
 
 size_t StreamPeerSerial::write_raw(const PackedByteArray &data) {
@@ -285,71 +651,6 @@ size_t StreamPeerSerial::write_raw(const PackedByteArray &data) {
 	}
 
 	return 0;
-}
-
-Error StreamPeerSerial::_put_data(const uint8_t *p_data, int32_t bytes, int32_t *r_sent) {
-  if(bytes < 0) {
-    return ERR_PARAMETER_RANGE_ERROR;
-  }
-
-  Error result = OK;
-	try {
-    do {
-	  	if(int sent = static_cast<int>(serial->write(p_data, bytes)); sent == 0) {
-        std::this_thread::sleep_for(milliseconds(serial->getTimeout().write_timeout_constant));
-      }
-      else {
-        *r_sent += sent;
-        p_data += sent;
-        bytes -= sent;
-      }
-    } while(bytes > 0);
-  } catch (PortNotOpenedException &e) {
-    _on_error(__FUNCTION__, e.what());
-    result = ERR_FILE_CANT_OPEN;
-    *r_sent = 0;
-  } catch (IOException &e) {
-    _on_error(__FUNCTION__, e.what());
-    result = ERR_FILE_CANT_WRITE;
-    *r_sent = 0;
-  } catch (SerialException &e) {
-    _on_error(__FUNCTION__, e.what());
-    result = ERR_FILE_CORRUPT;
-    *r_sent = 0;
-  } catch (...) {
-    _on_error(__FUNCTION__, "Unknown error");
-    result = ERR_UNAVAILABLE;
-    *r_sent = 0;
-  }
-
-	return result;
-}
-
-Error StreamPeerSerial::_put_partial_data(const uint8_t *p_data, int32_t bytes, int32_t *r_sent) {
-  Error result = OK;
-	try {
-		if((*r_sent = static_cast<int>(serial->write(p_data, bytes))) == 0) {
-      result = ERR_BUSY;
-    }
-  } catch (PortNotOpenedException &e) {
-    _on_error(__FUNCTION__, e.what());
-    result = ERR_FILE_CANT_OPEN;
-    *r_sent = 0;
-  } catch (IOException &e) {
-    _on_error(__FUNCTION__, e.what());
-    result = ERR_FILE_CANT_WRITE;
-    *r_sent = 0;
-  } catch (SerialException &e) {
-    _on_error(__FUNCTION__, e.what());
-    result = ERR_FILE_CORRUPT;
-    *r_sent = 0;
-  } catch (...) {
-    _on_error(__FUNCTION__, "Unknown error");
-    result = ERR_UNAVAILABLE;
-    *r_sent = 0;
-  }
-
-	return result;
 }
 
 String StreamPeerSerial::read_line(size_t max_length, String eol, bool utf8_encoding) {
@@ -438,6 +739,7 @@ uint32_t StreamPeerSerial::get_timeout() const {
 }
 
 Error StreamPeerSerial::set_baudrate(uint32_t baudrate) {
+  printf("set_baudrate(%u)\n", baudrate);
 	try {
 		serial->setBaudrate(baudrate);
 		return OK;
@@ -457,6 +759,7 @@ uint32_t StreamPeerSerial::get_baudrate() const {
 }
 
 Error StreamPeerSerial::set_bytesize(ByteSize bytesize) {
+  printf("set_bytesize(%d)\n", bytesize);
 	try {
 		serial->setBytesize(bytesize_t(bytesize));
 		return OK;
@@ -476,6 +779,7 @@ StreamPeerSerial::ByteSize StreamPeerSerial::get_bytesize() const {
 }
 
 Error StreamPeerSerial::set_parity(Parity parity) {
+  printf("set_parity(%d)\n", parity);
 	try {
 		serial->setParity(parity_t(parity));
 		return OK;
@@ -495,6 +799,7 @@ StreamPeerSerial::Parity StreamPeerSerial::get_parity() const {
 }
 
 Error StreamPeerSerial::set_stopbits(StopBits stopbits) {
+  printf("set_stopbits(%d)\n", stopbits);
 	try {
 		serial->setStopbits(stopbits_t(stopbits));
 		return OK;
@@ -732,6 +1037,40 @@ void StreamPeerSerial::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("open", "port"), &StreamPeerSerial::open, DEFVAL(""));
 	ClassDB::bind_method(D_METHOD("is_open"), &StreamPeerSerial::is_open);
 	ClassDB::bind_method(D_METHOD("close"), &StreamPeerSerial::close);
+
+  ClassDB::bind_method(D_METHOD("put_data", "data"), &StreamPeerSerial::put_data);
+  ClassDB::bind_method(D_METHOD("put_partial_data", "data"), &StreamPeerSerial::put_partial_data);
+  ClassDB::bind_method(D_METHOD("get_data", "bytes"), &StreamPeerSerial::get_data);
+  ClassDB::bind_method(D_METHOD("get_partial_data", "bytes"), &StreamPeerSerial::get_partial_data);
+  ClassDB::bind_method(D_METHOD("get_available_bytes"), &StreamPeerSerial::get_available_bytes);
+  ClassDB::bind_method(D_METHOD("set_big_endian", "enable"), &StreamPeerSerial::set_big_endian);
+  ClassDB::bind_method(D_METHOD("is_big_endian_enabled"), &StreamPeerSerial::is_big_endian_enabled);
+  ClassDB::bind_method(D_METHOD("put_8", "value"), &StreamPeerSerial::put_8);
+  ClassDB::bind_method(D_METHOD("put_u8", "value"), &StreamPeerSerial::put_u8);
+  ClassDB::bind_method(D_METHOD("put_16", "value"), &StreamPeerSerial::put_16);
+  ClassDB::bind_method(D_METHOD("put_u16", "value"), &StreamPeerSerial::put_u16);
+  ClassDB::bind_method(D_METHOD("put_32", "value"), &StreamPeerSerial::put_32);
+  ClassDB::bind_method(D_METHOD("put_u32", "value"), &StreamPeerSerial::put_u32);
+  ClassDB::bind_method(D_METHOD("put_64", "value"), &StreamPeerSerial::put_64);
+  ClassDB::bind_method(D_METHOD("put_u64", "value"), &StreamPeerSerial::put_u64);
+  ClassDB::bind_method(D_METHOD("put_float", "value"), &StreamPeerSerial::put_float);
+  ClassDB::bind_method(D_METHOD("put_double", "value"), &StreamPeerSerial::put_double);
+  ClassDB::bind_method(D_METHOD("put_string", "value"), &StreamPeerSerial::put_string);
+  ClassDB::bind_method(D_METHOD("put_utf8_string", "value"), &StreamPeerSerial::put_utf8_string);
+  ClassDB::bind_method(D_METHOD("put_var", "value", "full_objects"), &StreamPeerSerial::put_var, DEFVAL(false));
+  ClassDB::bind_method(D_METHOD("get_8"), &StreamPeerSerial::get_8);
+  ClassDB::bind_method(D_METHOD("get_u8"), &StreamPeerSerial::get_u8);
+  ClassDB::bind_method(D_METHOD("get_16"), &StreamPeerSerial::get_16);
+  ClassDB::bind_method(D_METHOD("get_u16"), &StreamPeerSerial::get_u16);
+  ClassDB::bind_method(D_METHOD("get_32"), &StreamPeerSerial::get_32);
+  ClassDB::bind_method(D_METHOD("get_u32"), &StreamPeerSerial::get_u32);
+  ClassDB::bind_method(D_METHOD("get_64"), &StreamPeerSerial::get_64);
+  ClassDB::bind_method(D_METHOD("get_u64"), &StreamPeerSerial::get_u64);
+  ClassDB::bind_method(D_METHOD("get_float"), &StreamPeerSerial::get_float);
+  ClassDB::bind_method(D_METHOD("get_double"), &StreamPeerSerial::get_double);
+  ClassDB::bind_method(D_METHOD("get_string", "bytes"), &StreamPeerSerial::get_string, DEFVAL(-1));
+  ClassDB::bind_method(D_METHOD("get_utf8_string", "bytes"), &StreamPeerSerial::get_utf8_string, DEFVAL(-1));
+  ClassDB::bind_method(D_METHOD("get_var", "allow_objects"), &StreamPeerSerial::get_var, DEFVAL(false));
 
 	ClassDB::bind_method(D_METHOD("wait_readable"), &StreamPeerSerial::wait_readable);
 	ClassDB::bind_method(D_METHOD("wait_byte_times", "count"), &StreamPeerSerial::wait_byte_times);

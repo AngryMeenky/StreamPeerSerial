@@ -52,18 +52,18 @@ using namespace godot;
 
 using namespace serial;
 
-class StreamPeerSerial : public StreamPeerExtension {
-	GDCLASS(StreamPeerSerial, StreamPeerExtension);
+class StreamPeerSerial : public RefCounted {
+	GDCLASS(StreamPeerSerial, RefCounted);
 
 	static void _thread_func(void *p_user_data);
 
-	Serial *serial;
+	Serial *serial = nullptr;
 	int monitoring_interval = 10000;
 	std::atomic<bool> fine_working = false;
 	std::atomic<bool> monitoring_should_exit = true;
 	std::thread thread;
-
 	String error_message = "";
+  bool big_endian = false;
 
 	void _data_received(const PackedByteArray &buf);
 
@@ -104,12 +104,39 @@ public:
 
 	static Dictionary list_ports();
 
-  Error _get_data(uint8_t *p_buffer, int32_t r_bytes, int32_t *r_received) override;
-  Error _get_partial_data(uint8_t *p_buffer, int r_bytes, int32_t *r_received) override;
-  Error _put_data(const uint8_t *p_data, int32_t p_bytes, int32_t *r_sent) override;
-  Error _put_partial_data(const uint8_t *p_data, int32_t p_bytes, int32_t *r_sent) override;
-
-	int32_t _get_available_bytes() const override;
+  Error put_data(const PackedByteArray &data);
+  Array put_partial_data(const PackedByteArray &data);
+  Array get_data(int32_t bytes);
+  Array get_partial_data(int32_t bytes);
+  int32_t get_available_bytes() const;
+  void set_big_endian(bool enable) { big_endian = enable; }
+  bool is_big_endian_enabled() const { return big_endian; }
+  void put_8(int32_t value);
+  void put_u8(uint32_t value);
+  void put_16(int32_t value);
+  void put_u16(uint32_t value);
+  void put_32(int32_t value);
+  void put_u32(uint32_t value);
+  void put_64(int64_t value);
+  void put_u64(uint64_t value);
+  void put_float(double value);
+  void put_double(double value);
+  void put_string(const String &value);
+  void put_utf8_string(const String &value);
+  void put_var(const Variant &value, bool full_objects = false);
+  int8_t get_8();
+  uint8_t get_u8();
+  int16_t get_16();
+  uint16_t get_u16();
+  int32_t get_32();
+  uint32_t get_u32();
+  int64_t get_64();
+  uint64_t get_u64();
+  double get_float();
+  double get_double();
+  String get_string(int32_t bytes = -1);
+  String get_utf8_string(int32_t bytes = -1);
+  Variant get_var(bool allow_objects = false);
 
 	bool is_in_error() { return is_open() && !fine_working; }
 	inline String get_last_error() { return error_message; }
@@ -188,6 +215,8 @@ public:
 	bool get_cd();
 
 protected:
+  Error _put_bytes(const uint8_t *, int32_t);
+  Error _get_bytes(uint8_t *, int32_t, int32_t &);
 	String _to_string() const;
 
 	static void _bind_methods();
