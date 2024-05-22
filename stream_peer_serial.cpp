@@ -46,20 +46,29 @@ using namespace godot;
 
 using namespace std::chrono;
 
+
 void StreamPeerSerial::_data_received(const PackedByteArray &buf) {
 	emit_signal("data_received", buf);
 }
 
+
 StreamPeerSerial::StreamPeerSerial(const String &port, uint32_t baudrate, uint32_t timeout, ByteSize bytesize, Parity parity, StopBits stopbits, FlowControl flowcontrol) {
+  serialerror_t err = serialerror_success;
 	serial = new Serial(port.ascii().get_data(),
-			baudrate, Timeout::simpleTimeout(timeout), bytesize_t(bytesize), parity_t(parity), stopbits_t(stopbits), flowcontrol_t(flowcontrol));
+			baudrate, Timeout::simpleTimeout(timeout), bytesize_t(bytesize),
+      parity_t(parity), stopbits_t(stopbits), flowcontrol_t(flowcontrol), &err);
+  if(err != serialerror_success) {
+    _on_error(__FUNCTION__, serial->getLastError().c_str());
+  }
 }
+
 
 StreamPeerSerial::~StreamPeerSerial() {
 	close();
 	stop_monitoring();
 	delete serial;
 }
+
 
 Dictionary StreamPeerSerial::list_ports() {
 	std::vector<PortInfo> ports_info = serial::list_ports();
@@ -75,6 +84,7 @@ Dictionary StreamPeerSerial::list_ports() {
 	return info_dict;
 }
 
+
 void StreamPeerSerial::_on_error(const String &where, const String &what) {
 	fine_working = false;
 	error_message = "[" + get_port() + "] Error at " + where + ": " + what;
@@ -82,20 +92,18 @@ void StreamPeerSerial::_on_error(const String &where, const String &what) {
 	emit_signal("got_error", where, what);
 }
 
+
 Error StreamPeerSerial::start_monitoring(uint64_t interval_in_usec) {
 	ERR_FAIL_COND_V_MSG(!monitoring_should_exit, ERR_ALREADY_IN_USE, "Monitor already started.");
 	stop_monitoring();
 	monitoring_should_exit = false;
 	monitoring_interval = interval_in_usec;
 	thread = std::thread(_thread_func, this);
-	if (is_open()) {
-		fine_working = true;
-	} else {
-		fine_working = false;
-	}
+	fine_working = is_open();
 
 	return OK;
 }
+
 
 void StreamPeerSerial::stop_monitoring() {
 	monitoring_should_exit = true;
@@ -103,6 +111,7 @@ void StreamPeerSerial::stop_monitoring() {
 		thread.join();
 	}
 }
+
 
 void StreamPeerSerial::_thread_func(void *p_user_data) {
 	StreamPeerSerial *serial_port = static_cast<StreamPeerSerial *>(p_user_data);
@@ -122,112 +131,118 @@ void StreamPeerSerial::_thread_func(void *p_user_data) {
 }
 
 Error StreamPeerSerial::open(String port) {
-	error_message = "";
-	try {
-		if (serial->isOpen()) {
-			close();
-		}
-		if (!port.is_empty()) {
-			set_port(port);
-		}
-		serial->open();
-	} catch (IOException &e) {
-		_on_error(__FUNCTION__, e.what());
-		return ERR_CANT_OPEN;
-	} catch (SerialException &e) {
-		_on_error(__FUNCTION__, e.what());
-		return ERR_ALREADY_IN_USE;
-	} catch (std::invalid_argument &e) {
-		_on_error(__FUNCTION__, e.what());
-		return ERR_INVALID_PARAMETER;
-	} catch (...) {
-		_on_error(__FUNCTION__, "Unknown error");
-		return FAILED;
-	}
+  error_message = "";
+  if(serial->isOpen()) {
+    close();
+  }
 
-	fine_working = true;
-	emit_signal("opened", port);
-	return OK;
+  if(!port.is_empty()) {
+    if(set_port(port) != OK) {
+      _on_error(__FUNCTION__, serial->getLastError().c_str());
+      return FAILED;
+    }
+  }
+
+  if(auto err = serial->open(); err != serialerror_success) {
+    _on_error(__FUNCTION__, serial->getLastError().c_str());
+    switch(err) {
+      case serialerror_io_failed:
+        return ERR_CANT_OPEN;
+      break;
+      case serialerror_serial:
+        return ERR_ALREADY_IN_USE;
+      break;
+      case serialerror_argument:
+        return ERR_INVALID_PARAMETER;
+      break;
+      default:
+        return FAILED;
+      break;
+    }
+  }
+
+  fine_working = true;
+  emit_signal("opened", port);
+  return OK;
 }
+
 
 bool StreamPeerSerial::is_open() const {
 	return serial->isOpen();
 }
 
 void StreamPeerSerial::close() {
-	try {
-		serial->close();
-	} catch (IOException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (SerialException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (...) {
-		_on_error(__FUNCTION__, "Unknown error");
-	}
-
-	fine_working = false;
-	emit_signal("closed", serial->getPort().c_str());
-}
-
-Error StreamPeerSerial::_put_bytes(const uint8_t *ptr, int32_t bytes) {
-  Error result = OK;
-	try {
-    do {
-	  	if(int sent = static_cast<int>(serial->write(ptr, bytes)); sent == 0) {
-        std::this_thread::sleep_for(milliseconds(serial->getTimeout().write_timeout_constant));
-      }
-      else {
-        ptr += sent;
-        bytes -= sent;
-      }
-    } while(bytes > 0);
-  } catch (PortNotOpenedException &e) {
-    _on_error(__FUNCTION__, e.what());
-    result = ERR_FILE_CANT_OPEN;
-  } catch (IOException &e) {
-    _on_error(__FUNCTION__, e.what());
-    result = ERR_FILE_CANT_WRITE;
-  } catch (SerialException &e) {
-    _on_error(__FUNCTION__, e.what());
-    result = ERR_FILE_CORRUPT;
-  } catch (...) {
-    _on_error(__FUNCTION__, "Unknown error");
-    result = ERR_UNAVAILABLE;
+  if(serial->close() != serialerror_success) {
+    _on_error(__FUNCTION__, serial->getLastError().c_str());
   }
 
-	return result;
-
+  fine_working = false;
+  emit_signal("closed", serial->getPort().c_str());
 }
+
+
+Error StreamPeerSerial::_put_bytes(const uint8_t *ptr, int32_t bytes) {
+  if(bytes < 0) {
+    return ERR_PARAMETER_RANGE_ERROR;
+  }
+
+  Error result = OK;
+  serialerror_t err = serialerror_success;
+  do {
+    if(int sent = static_cast<int>(serial->write(ptr, bytes, &err)); sent == 0) {
+      std::this_thread::sleep_for(milliseconds(serial->getTimeout().write_timeout_constant));
+    }
+    else {
+      ptr += sent;
+      bytes -= sent;
+    }
+  } while(err == serialerror_success && bytes > 0);
+
+  if(err != serialerror_success) {
+    _on_error(__FUNCTION__, serial->getLastError().c_str());
+    switch(err) {
+      case serialerror_not_opened:
+          result = ERR_FILE_CANT_OPEN;
+      break;
+      case serialerror_io_failed:
+        result = ERR_FILE_CANT_WRITE;
+      break;
+      case serialerror_serial:
+        result = ERR_FILE_CORRUPT;
+      break;
+      default:
+        result = ERR_UNAVAILABLE;
+      break;
+    }
+  }
+
+  return result;
+}
+
 
 Error StreamPeerSerial::put_data(const PackedByteArray &data) {
   return _put_bytes(data.ptr(), data.size());
 }
 
+
 Array StreamPeerSerial::put_partial_data(const PackedByteArray &data) {
   Array result;
-	try {
-		if(auto sent = serial->write(data.ptr(), data.size()); sent == 0) {
-      result = Array(data);
-    }
-    else if(sent < data.size()) {
-      result = Array(data.slice(sent));
-    }
-  } catch (PortNotOpenedException &e) {
-    _on_error(__FUNCTION__, e.what());
+  serialerror_t err = serialerror_success;
+
+  if(auto sent = serial->write(data.ptr(), data.size(), &err); sent == 0) {
     result = Array(data);
-  } catch (IOException &e) {
-    _on_error(__FUNCTION__, e.what());
-    result = Array(data);
-  } catch (SerialException &e) {
-    _on_error(__FUNCTION__, e.what());
-    result = Array(data);
-  } catch (...) {
-    _on_error(__FUNCTION__, "Unknown error");
-    result = Array(data);
+  }
+  else if(sent < data.size()) {
+    result = Array(data.slice(sent));
+  }
+
+  if(err != serialerror_success) {
+    _on_error(__FUNCTION__, serial->getLastError().c_str());
   }
 
 	return result;
 }
+
 
 Error StreamPeerSerial::_get_bytes(uint8_t *ptr, int32_t bytes, int32_t &count) {
   count = 0;
@@ -237,33 +252,39 @@ Error StreamPeerSerial::_get_bytes(uint8_t *ptr, int32_t bytes, int32_t &count) 
   }
 
   Error result = OK;
-  try {
-    do {
-      if(auto received = serial->read(ptr, bytes); received == 0) {
-        std::this_thread::sleep_for(milliseconds(serial->getTimeout().read_timeout_constant));
-      }
-      else {
-        ptr += received;
-        bytes -= received;
-        count += received;
-      }
-    } while(bytes > 0);
-  } catch (PortNotOpenedException &e) {
-    _on_error(__FUNCTION__, e.what());
-    result = ERR_FILE_CANT_OPEN;
-  } catch (IOException &e) {
-    _on_error(__FUNCTION__, e.what());
-    result = ERR_FILE_CANT_READ;
-  } catch (SerialException &e) {
-    _on_error(__FUNCTION__, e.what());
-    result = ERR_CANT_ACQUIRE_RESOURCE;
-  } catch (...) {
-    _on_error(__FUNCTION__, "Unknown error");
-    result = FAILED;
+  serialerror_t err = serialerror_success;
+  do {
+    if(auto received = serial->read(ptr, bytes, &err); received == 0) {
+      std::this_thread::sleep_for(milliseconds(serial->getTimeout().read_timeout_constant));
+    }
+    else {
+      ptr += received;
+      bytes -= received;
+      count += received;
+    }
+  } while(err == serialerror_success && bytes > 0);
+
+  if(err != serialerror_success) {
+    _on_error(__FUNCTION__, serial->getLastError().c_str());
+    switch(err) {
+      case serialerror_not_opened:
+          result = ERR_FILE_CANT_OPEN;
+      break;
+      case serialerror_io_failed:
+        result = ERR_FILE_CANT_READ;
+      break;
+      case serialerror_serial:
+        result = ERR_CANT_ACQUIRE_RESOURCE;
+      break;
+      default:
+        result = FAILED;
+      break;
+    }
   }
 
   return result;
 }
+
 
 Array StreamPeerSerial::get_data(int32_t bytes) {
   if(bytes < 0) {
@@ -281,6 +302,7 @@ Array StreamPeerSerial::get_data(int32_t bytes) {
   return Array(buffer);
 }
 
+
 Array StreamPeerSerial::get_partial_data(int32_t bytes) {
   auto avail = get_available_bytes();
   if(avail <= 0) {
@@ -293,19 +315,17 @@ Array StreamPeerSerial::get_partial_data(int32_t bytes) {
   return get_data(bytes);
 }
 
-int32_t StreamPeerSerial::get_available_bytes() const {
-	try {
-		return serial->available();
-	} catch (IOException &e) {
-		const_cast<StreamPeerSerial *>(this)->_on_error(__FUNCTION__, e.what());
-	} catch (SerialException &e) {
-		const_cast<StreamPeerSerial *>(this)->_on_error(__FUNCTION__, e.what());
-	} catch (...) {
-		const_cast<StreamPeerSerial *>(this)->_on_error(__FUNCTION__, "Unknown error");
-	}
 
-	return 0;
+int32_t StreamPeerSerial::get_available_bytes() const {
+  serialerror_t err = serialerror_success;
+  auto retVal = serial->available(&err);
+  if(err != serialerror_success) {
+    const_cast<StreamPeerSerial *>(this)->_on_error(__FUNCTION__, serial->getLastError().c_str());
+  }
+
+  return retVal;
 }
+
 
 void StreamPeerSerial::put_8(int32_t value) {
   put_u8(value & 0xFF);
@@ -590,428 +610,379 @@ Variant StreamPeerSerial::get_var(bool allow_objects) {
   return Variant();
 }
 
-bool StreamPeerSerial::wait_readable() {
-	try {
-		return serial->waitReadable();
-	} catch (IOException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (SerialException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (...) {
-		_on_error(__FUNCTION__, "Unknown error");
-	}
 
-	return false;
+bool StreamPeerSerial::wait_readable() {
+  serialerror_t err = serialerror_success;
+  auto retVal = serial->waitReadable(&err);
+  if(err != serialerror_success) {
+    _on_error(__FUNCTION__, serial->getLastError().c_str());
+  }
+
+  return retVal;
 }
+
 
 void StreamPeerSerial::wait_byte_times(size_t count) {
-	try {
-		serial->waitByteTimes(count);
-	} catch (IOException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (SerialException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (...) {
-		_on_error(__FUNCTION__, "Unknown error");
-	}
+  serial->waitByteTimes(count);
 }
+
 
 PackedByteArray StreamPeerSerial::read_raw(size_t size) {
-	PackedByteArray raw;
-  raw.resize(size);
-	try {
-		size_t bytes_read = serial->read(raw.ptrw(), size);
-		if(bytes_read >= 0 && raw.size() != bytes_read) {
-      raw.resize(bytes_read);
-		}
-	} catch (PortNotOpenedException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (IOException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (SerialException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (...) {
-		_on_error(__FUNCTION__, "Unknown error");
-	}
+  PackedByteArray raw;
+  std::vector<uint8_t> buf_temp;
+  serialerror_t err = serialerror_success;
+  size_t bytes_read = serial->read(buf_temp, size, &err);
+  if (bytes_read > 0 && raw.resize(bytes_read) == OK) {
+    memcpy(raw.ptrw(), (const char *)buf_temp.data(), bytes_read);
+  }
+  if(err != serialerror_success) {
+    _on_error(__FUNCTION__, serial->getLastError().c_str());
+  }
 
-	return raw;
+  return raw;
 }
+
 
 size_t StreamPeerSerial::write_raw(const PackedByteArray &data) {
-	try {
-		return serial->write(data.ptr(), data.size());
-	} catch (PortNotOpenedException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (IOException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (SerialException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (...) {
-		_on_error(__FUNCTION__, "Unknown error");
-	}
+  serialerror_t err = serialerror_success;
+  auto retVal = serial->write(data.ptr(), data.size(), &err);
+  if(err != serialerror_success) {
+    _on_error(__FUNCTION__, serial->getLastError().c_str());
+  }
 
-	return 0;
+  return retVal;
 }
+
 
 String StreamPeerSerial::read_line(size_t max_length, String eol, bool utf8_encoding) {
-	try {
-		if (utf8_encoding) {
-			String str;
-			str.parse_utf8(serial->readline(max_length, eol.utf8().get_data()).c_str());
-			return str;
-		} else {
-			return serial->readline(max_length, eol.ascii().get_data()).c_str();
-		}
-	} catch (PortNotOpenedException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (IOException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (SerialException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (...) {
-		_on_error(__FUNCTION__, "Unknown error");
-	}
+  serialerror_t err = serialerror_success;
+  auto line = serial->readline(max_length, eol.utf8().get_data(), &err);
+  if(err != serialerror_success) {
+    _on_error(__FUNCTION__, serial->getLastError().c_str());
+  }
 
-	return "";
+  if(utf8_encoding) {
+    String str;
+    str.parse_utf8(line.c_str());
+    return str;
+  }
+
+  return line.c_str();
 }
+
 
 PackedStringArray StreamPeerSerial::read_lines(size_t max_length, String eol, bool utf8_encoding) {
-	try {
-		PackedStringArray lines;
-		if (utf8_encoding) {
-			for (std::string line : serial->readlines(max_length, eol.utf8().get_data())) {
-				String str;
-				str.parse_utf8(line.c_str());
-				lines.append(str);
-			}
-			return lines;
-		} else {
-			for (std::string line : serial->readlines(max_length, eol.utf8().get_data())) {
-				lines.append(line.c_str());
-			}
-			return lines;
-		}
-	} catch (PortNotOpenedException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (IOException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (SerialException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (...) {
-		_on_error(__FUNCTION__, "Unknown error");
-	}
+  PackedStringArray lines;
+  serialerror_t err = serialerror_success;
+  if (utf8_encoding) {
+    for(std::string line : serial->readlines(max_length, eol.utf8().get_data())) {
+      String str;
+      str.parse_utf8(line.c_str());
+      lines.append(str);
+    }
+  }
+  else {
+    for(std::string line : serial->readlines(max_length, eol.utf8().get_data())) {
+      lines.append(line.c_str());
+    }
+  }
 
-	return PackedStringArray();
+  if(err != serialerror_success) {
+    _on_error(__FUNCTION__, serial->getLastError().c_str());
+  }
+
+  return lines;
 }
+
 
 Error StreamPeerSerial::set_port(const String &port) {
-	try {
-		serial->setPort(port.ascii().get_data());
-		return OK;
-	} catch (IOException &e) {
-		_on_error(__FUNCTION__, e.what());
-		return ERR_CANT_OPEN;
-	} catch (SerialException &e) {
-		_on_error(__FUNCTION__, e.what());
-		return ERR_ALREADY_IN_USE;
-	} catch (std::invalid_argument &e) {
-		_on_error(__FUNCTION__, e.what());
-		return ERR_INVALID_PARAMETER;
-	} catch (...) {
-		_on_error(__FUNCTION__, "Unknown error");
-		return FAILED;
-	}
+  Error result = OK;
+  serialerror_t err = serialerror_success;
+  serial->setPort(port.ascii().get_data(), &err);
+  if(err != serialerror_success) {
+    _on_error(__FUNCTION__, serial->getLastError().c_str());
+    switch(err) {
+      case serialerror_argument:
+        result = ERR_INVALID_PARAMETER;
+      break;
+      case serialerror_io_failed:
+          result = ERR_FILE_CANT_OPEN;
+      break;
+      case serialerror_serial:
+        result = ERR_ALREADY_IN_USE;
+      break;
+      default:
+        result = FAILED;
+      break;
+    }
 
-	return OK;
+  }
+
+  return result;
 }
+
 
 String StreamPeerSerial::get_port() const {
-	return serial->getPort().c_str();
+  serialerror_t err = serialerror_success;
+  auto port = serial->getPort(&err);
+  if(err != serialerror_success) {
+    const_cast<StreamPeerSerial *>(this)->_on_error(__FUNCTION__, serial->getLastError().c_str());
+  }
+
+  return port.c_str();
 }
+
 
 Error StreamPeerSerial::set_timeout(uint32_t timeout) {
 	serial->setTimeout(Timeout::max(), timeout, 0, timeout, 0);
 	return OK;
 }
 
+
 uint32_t StreamPeerSerial::get_timeout() const {
 	return serial->getTimeout().read_timeout_constant;
 }
 
-Error StreamPeerSerial::set_baudrate(uint32_t baudrate) {
-  printf("set_baudrate(%u)\n", baudrate);
-	try {
-		serial->setBaudrate(baudrate);
-		return OK;
-	} catch (IOException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (std::invalid_argument &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (...) {
-		_on_error(__FUNCTION__, "Unknown error");
-	}
 
-	return FAILED;
+Error StreamPeerSerial::set_baudrate(uint32_t baudrate) {
+  serialerror_t err = serialerror_success;
+  serial->setBaudrate(baudrate, &err);
+  if(err != serialerror_success) {
+    _on_error(__FUNCTION__, serial->getLastError().c_str());
+    return FAILED;
+  }
+
+  return OK;
 }
+
 
 uint32_t StreamPeerSerial::get_baudrate() const {
-	return serial->getBaudrate();
+  serialerror_t err = serialerror_success;
+  auto baud = serial->getBaudrate(&err);
+  if(err != serialerror_success) {
+    const_cast<StreamPeerSerial *>(this)->_on_error(__FUNCTION__, serial->getLastError().c_str());
+  }
+
+  return baud;
 }
+
 
 Error StreamPeerSerial::set_bytesize(ByteSize bytesize) {
-  printf("set_bytesize(%d)\n", bytesize);
-	try {
-		serial->setBytesize(bytesize_t(bytesize));
-		return OK;
-	} catch (IOException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (std::invalid_argument &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (...) {
-		_on_error(__FUNCTION__, "Unknown error");
-	}
+  serialerror_t err = serialerror_success;
+  serial->setBytesize(bytesize_t(bytesize), &err);
+  if(err != serialerror_success) {
+    _on_error(__FUNCTION__, serial->getLastError().c_str());
+    return FAILED;
+  }
 
-	return FAILED;
+  return OK;
 }
+
 
 StreamPeerSerial::ByteSize StreamPeerSerial::get_bytesize() const {
-	return ByteSize(serial->getBytesize());
+  serialerror_t err = serialerror_success;
+  auto sz = ByteSize(serial->getBytesize(&err));
+  if(err != serialerror_success) {
+    const_cast<StreamPeerSerial *>(this)->_on_error(__FUNCTION__, serial->getLastError().c_str());
+  }
+
+  return sz;
 }
+
 
 Error StreamPeerSerial::set_parity(Parity parity) {
-  printf("set_parity(%d)\n", parity);
-	try {
-		serial->setParity(parity_t(parity));
-		return OK;
-	} catch (IOException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (std::invalid_argument &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (...) {
-		_on_error(__FUNCTION__, "Unknown error");
-	}
+  serialerror_t err = serialerror_success;
+  serial->setParity(parity_t(parity), &err);
+  if(err != serialerror_success) {
+    _on_error(__FUNCTION__, serial->getLastError().c_str());
+    return FAILED;
+  }
 
-	return FAILED;
+  return OK;
 }
+
 
 StreamPeerSerial::Parity StreamPeerSerial::get_parity() const {
-	return Parity(serial->getParity());
+  serialerror_t err = serialerror_success;
+  auto par = Parity(serial->getParity(&err));
+  if(err != serialerror_success) {
+    const_cast<StreamPeerSerial *>(this)->_on_error(__FUNCTION__, serial->getLastError().c_str());
+  }
+
+  return par;
 }
+
 
 Error StreamPeerSerial::set_stopbits(StopBits stopbits) {
-  printf("set_stopbits(%d)\n", stopbits);
-	try {
-		serial->setStopbits(stopbits_t(stopbits));
-		return OK;
-	} catch (IOException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (std::invalid_argument &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (...) {
-		_on_error(__FUNCTION__, "Unknown error");
-	}
+  serialerror_t err = serialerror_success;
+  serial->setStopbits(stopbits_t(stopbits), &err);
+  if(err != serialerror_success) {
+    _on_error(__FUNCTION__, serial->getLastError().c_str());
+    return FAILED;
+  }
 
-	return FAILED;
+  return OK;
 }
+
 
 StreamPeerSerial::StopBits StreamPeerSerial::get_stopbits() const {
-	return StopBits(serial->getStopbits());
+  serialerror_t err = serialerror_success;
+  auto bits = StopBits(serial->getStopbits(&err));
+  if(err != serialerror_success) {
+    const_cast<StreamPeerSerial *>(this)->_on_error(__FUNCTION__, serial->getLastError().c_str());
+  }
+
+  return bits;
 }
+
 
 Error StreamPeerSerial::set_flowcontrol(FlowControl flowcontrol) {
-	try {
-		serial->setFlowcontrol(flowcontrol_t(flowcontrol));
-		return OK;
-	} catch (IOException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (std::invalid_argument &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (...) {
-		_on_error(__FUNCTION__, "Unknown error");
-	}
+  serialerror_t err = serialerror_success;
+  serial->setFlowcontrol(flowcontrol_t(flowcontrol), &err);
+  if(err != serialerror_success) {
+    _on_error(__FUNCTION__, serial->getLastError().c_str());
+    return FAILED;
+  }
 
-	return FAILED;
+  return OK;
 }
+
 
 StreamPeerSerial::FlowControl StreamPeerSerial::get_flowcontrol() const {
-	return FlowControl(serial->getFlowcontrol());
+  serialerror_t err = serialerror_success;
+  auto flow = FlowControl(serial->getFlowcontrol(&err));
+  if(err != serialerror_success) {
+    const_cast<StreamPeerSerial *>(this)->_on_error(__FUNCTION__, serial->getLastError().c_str());
+  }
+
+  return flow;
 }
+
 
 Error StreamPeerSerial::flush() {
-	try {
-		serial->flush();
-		return OK;
-	} catch (PortNotOpenedException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (...) {
-		_on_error(__FUNCTION__, "Unknown error");
-	}
+  if(serial->flush() != serialerror_success) {
+    _on_error(__FUNCTION__, serial->getLastError().c_str());
+    return FAILED;
+  }
 
-	return FAILED;
+  return OK;
 }
+
 
 Error StreamPeerSerial::flush_input() {
-	try {
-		serial->flushInput();
-		return OK;
-	} catch (PortNotOpenedException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (...) {
-		_on_error(__FUNCTION__, "Unknown error");
-	}
+  if(serial->flushInput() != serialerror_success) {
+    _on_error(__FUNCTION__, serial->getLastError().c_str());
+    return FAILED;
+  }
 
-	return FAILED;
+  return OK;
 }
+
 
 Error StreamPeerSerial::flush_output() {
-	try {
-		serial->flushOutput();
-		return OK;
-	} catch (PortNotOpenedException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (...) {
-		_on_error(__FUNCTION__, "Unknown error");
-	}
+  if(serial->flushOutput() != serialerror_success) {
+    _on_error(__FUNCTION__, serial->getLastError().c_str());
+    return FAILED;
+  }
 
-	return FAILED;
+  return OK;
 }
+
 
 Error StreamPeerSerial::send_break(int duration) {
-	try {
-		serial->sendBreak(duration);
-		return OK;
-	} catch (IOException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (PortNotOpenedException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (...) {
-		_on_error(__FUNCTION__, "Unknown error");
-	}
+  if(serial->sendBreak(duration) != serialerror_success) {
+    _on_error(__FUNCTION__, serial->getLastError().c_str());
+    return FAILED;
+  }
 
-	return FAILED;
+  return OK;
 }
+
 
 Error StreamPeerSerial::set_break(bool level) {
-	try {
-		serial->setBreak(level);
-		return OK;
-	} catch (SerialException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (PortNotOpenedException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (...) {
-		_on_error(__FUNCTION__, "Unknown error");
-	}
+  if(serial->setBreak(level) != serialerror_success) {
+    _on_error(__FUNCTION__, serial->getLastError().c_str());
+    return FAILED;
+  }
 
-	return FAILED;
+  return OK;
 }
+
 
 Error StreamPeerSerial::set_rts(bool level) {
-	try {
-		serial->setRTS(level);
-		return OK;
-	} catch (SerialException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (PortNotOpenedException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (...) {
-		_on_error(__FUNCTION__, "Unknown error");
-	}
+  if(serial->setRTS(level) != serialerror_success) {
+    _on_error(__FUNCTION__, serial->getLastError().c_str());
+    return FAILED;
+  }
 
-	return FAILED;
+  return OK;
 }
+
 
 Error StreamPeerSerial::set_dtr(bool level) {
-	try {
-		serial->setDTR(level);
-		return OK;
-	} catch (SerialException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (PortNotOpenedException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (...) {
-		_on_error(__FUNCTION__, "Unknown error");
-	}
-	return FAILED;
+  if(serial->setDTR(level) != serialerror_success) {
+    _on_error(__FUNCTION__, serial->getLastError().c_str());
+    return FAILED;
+  }
+
+  return OK;
 }
+
 
 bool StreamPeerSerial::wait_for_change() {
-	try {
-		return serial->waitForChange();
-	} catch (SerialException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (PortNotOpenedException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (...) {
-		_on_error(__FUNCTION__, "Unknown error");
-	}
+  serialerror_t err = serialerror_success;
+  auto result = serial->waitForChange(&err);
+  if(err != serialerror_success) {
+    _on_error(__FUNCTION__, serial->getLastError().c_str());
+  }
 
-	return false;
+  return result;
 }
+
 
 bool StreamPeerSerial::get_cts() {
-	try {
-		return serial->getCTS();
-	} catch (IOException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (SerialException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (PortNotOpenedException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (...) {
-		_on_error(__FUNCTION__, "Unknown error");
-	}
+  serialerror_t err = serialerror_success;
+  auto result = serial->getCTS(&err);
+  if(err != serialerror_success) {
+    _on_error(__FUNCTION__, serial->getLastError().c_str());
+  }
 
-	return false;
+  return result;
 }
+
 
 bool StreamPeerSerial::get_dsr() {
-	try {
-		return serial->getDSR();
-	} catch (IOException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (SerialException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (PortNotOpenedException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (...) {
-		_on_error(__FUNCTION__, "Unknown error");
-	}
+  serialerror_t err = serialerror_success;
+  auto result = serial->getDSR(&err);
+  if(err != serialerror_success) {
+    _on_error(__FUNCTION__, serial->getLastError().c_str());
+  }
 
-	return false;
+  return result;
 }
+
 
 bool StreamPeerSerial::get_ri() {
-	try {
-		return serial->getRI();
-	} catch (IOException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (SerialException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (PortNotOpenedException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (...) {
-		_on_error(__FUNCTION__, "Unknown error");
-	}
+  serialerror_t err = serialerror_success;
+  auto result = serial->getRI(&err);
+  if(err != serialerror_success) {
+    _on_error(__FUNCTION__, serial->getLastError().c_str());
+  }
 
-	return false;
+  return result;
 }
+
 
 bool StreamPeerSerial::get_cd() {
-	try {
-		return serial->getCD();
-	} catch (IOException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (SerialException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (PortNotOpenedException &e) {
-		_on_error(__FUNCTION__, e.what());
-	} catch (...) {
-		_on_error(__FUNCTION__, "Unknown error");
-	}
+  serialerror_t err = serialerror_success;
+  auto result = serial->getCD(&err);
+  if(err != serialerror_success) {
+    _on_error(__FUNCTION__, serial->getLastError().c_str());
+  }
 
-	return false;
+  return result;
 }
+
 
 String StreamPeerSerial::_to_string() const {
 	Dictionary ser_info;
