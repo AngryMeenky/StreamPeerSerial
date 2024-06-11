@@ -37,7 +37,7 @@ void initialize_stream_peer_serial_module(ModuleInitializationLevel p_level) {
 		return;
 	}
 
-	GDREGISTER_CLASS(StreamPeerSerial);
+	GDREGISTER_VIRTUAL_CLASS(StreamPeerSerial);
 }
 
 void uninitialize_stream_peer_serial_module(ModuleInitializationLevel p_level) {
