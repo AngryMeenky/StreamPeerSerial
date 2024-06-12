@@ -148,19 +148,15 @@ Error StreamPeerSerial::open(String port) {
  		_on_error(__FUNCTION__, serial->getLastError().c_str());
  		switch(err) {
  			case serialerror_io_failed:
-        printf("io failed\n");
  				return ERR_CANT_OPEN;
  			break;
  			case serialerror_serial:
-        printf("serial failed\n");
  				return ERR_ALREADY_IN_USE;
  			break;
  			case serialerror_argument:
-        printf("bad argument\n");
  				return ERR_INVALID_PARAMETER;
  			break;
  			default:
-        printf("failure\n");
  				return FAILED;
  			break;
  		}
@@ -219,6 +215,7 @@ PackedByteArray StreamPeerSerial::read_raw(size_t size) {
  	std::vector<uint8_t> buf_temp;
  	serialerror_t err = serialerror_success;
  	size_t bytes_read = serial->read(buf_temp, size, &err);
+
  	if (bytes_read > 0 && raw.resize(bytes_read) == OK) {
  		memcpy(raw.ptrw(), (const char *)buf_temp.data(), bytes_read);
  	}
