@@ -55,7 +55,7 @@ StreamPeerSerial::StreamPeerSerial(const String &port, uint32_t baudrate, uint32
 			baudrate, Timeout::simpleTimeout(timeout), bytesize_t(bytesize),
 			parity_t(parity), stopbits_t(stopbits), flowcontrol_t(flowcontrol), &err);
 	if(err != serialerror_success) {
-		_on_error(__FUNCTION__, serial->getLastError().c_str());
+		call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
 	}
 }
 
@@ -96,11 +96,7 @@ Error StreamPeerSerial::start_monitoring(uint64_t interval_in_usec) {
 	monitoring_should_exit = false;
 	monitoring_interval = interval_in_usec;
 	thread = std::thread(_thread_func, this);
-	if (is_open()) {
-		fine_working = true;
-	} else {
-		fine_working = false;
-	}
+	fine_working = is_open();
 
 	return OK;
 }
@@ -119,11 +115,10 @@ void StreamPeerSerial::_thread_func(void *p_user_data) {
 	while (!serial_port->monitoring_should_exit) {
 		time_point time_start = system_clock::now();
 
-		if (serial_port->fine_working) {
-			if (serial_port->is_open() && serial_port->_get_available_bytes() > 0) {
+		if (serial_port->fine_working && serial_port->_get_available_bytes() > 0) {
 				serial_port->call_deferred("_data_received", serial_port->read_raw(serial_port->_get_available_bytes()));
-			}
 		}
+
 		time_t time_elapsed = duration_cast<microseconds>(system_clock::now() - time_start).count();
 		if (time_elapsed < serial_port->monitoring_interval) {
 			std::this_thread::sleep_for(microseconds(serial_port->monitoring_interval - time_elapsed));
@@ -145,7 +140,7 @@ Error StreamPeerSerial::open(String port) {
 	}
 
  	if(auto err = serial->open(); err != serialerror_success) {
- 		_on_error(__FUNCTION__, serial->getLastError().c_str());
+		call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
  		switch(err) {
  			case serialerror_io_failed:
  				return ERR_CANT_OPEN;
@@ -187,9 +182,11 @@ int32_t StreamPeerSerial::_get_available_bytes() const {
  	serialerror_t err = serialerror_success;
  	auto retVal = serial->available(&err);
  	if(err != serialerror_success) {
- 		const_cast<StreamPeerSerial *>(this)->_on_error(__FUNCTION__, serial->getLastError().c_str());
+ 		const_cast<StreamPeerSerial *>(this)->call_deferred(
+        "_on_error", String(__FUNCTION__), String(serial->getLastError().c_str())
+    );
  	}
- 
+
  	return retVal;
 }
 
@@ -198,7 +195,7 @@ bool StreamPeerSerial::wait_readable() {
  	serialerror_t err = serialerror_success;
  	auto retVal = serial->waitReadable(&err);
  	if(err != serialerror_success) {
- 		_on_error(__FUNCTION__, serial->getLastError().c_str());
+		call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
  	}
  
  	return retVal;
@@ -218,9 +215,11 @@ PackedByteArray StreamPeerSerial::read_raw(size_t size) {
 
  	if (bytes_read > 0 && raw.resize(bytes_read) == OK) {
  		memcpy(raw.ptrw(), (const char *)buf_temp.data(), bytes_read);
+		call_deferred("_on_error", String(__FUNCTION__), String("Unable to allocate space"));
  	}
+
  	if(err != serialerror_success) {
- 		_on_error(__FUNCTION__, serial->getLastError().c_str());
+		call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
  	}
  
  	return raw;
@@ -239,7 +238,7 @@ Error StreamPeerSerial::_get_data(uint8_t *p_buffer, int32_t bytes, int32_t *r_r
  	}
 
  	if(err != serialerror_success) {
- 		_on_error(__FUNCTION__, serial->getLastError().c_str());
+		call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
  		switch(err) {
  			case serialerror_not_opened:
  	  			result = ERR_FILE_CANT_OPEN;
@@ -277,7 +276,7 @@ size_t StreamPeerSerial::write_raw(const PackedByteArray &data) {
  	serialerror_t err = serialerror_success;
  	auto retVal = serial->write(data.ptr(), data.size(), &err);
  	if(err != serialerror_success) {
- 		_on_error(__FUNCTION__, serial->getLastError().c_str());
+		call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
  	}
  
  	return retVal;
@@ -292,18 +291,18 @@ Error StreamPeerSerial::_put_data(const uint8_t *p_data, int32_t bytes, int32_t 
  	Error result = OK;
  	serialerror_t err = serialerror_success;
  	do {
- 	      	if(int sent = static_cast<int>(serial->write(p_data, bytes, &err)); sent == 0) {
+    if(int sent = static_cast<int>(serial->write(p_data, bytes, &err)); sent == 0) {
  			std::this_thread::sleep_for(milliseconds(serial->getTimeout().write_timeout_constant));
- 	  	}
- 	  	else {
- 	  		*r_sent += sent;
- 	  		p_data += sent;
- 	  		bytes -= sent;
- 	  	}
+    }
+    else {
+      *r_sent += sent;
+      p_data += sent;
+      bytes -= sent;
+    }
  	} while(err == serialerror_success && bytes > 0);
  
  	if(err != serialerror_success) {
- 		_on_error(__FUNCTION__, serial->getLastError().c_str());
+		call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
  		switch(err) {
  			case serialerror_not_opened:
  	  			result = ERR_FILE_CANT_OPEN;
@@ -332,7 +331,7 @@ Error StreamPeerSerial::_put_partial_data(const uint8_t *p_data, int32_t bytes, 
  	}
  
  	if(err != serialerror_success) {
- 		_on_error(__FUNCTION__, serial->getLastError().c_str());
+		call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
  		switch(err) {
  			case serialerror_not_opened:
  	  			result = ERR_FILE_CANT_OPEN;
@@ -357,7 +356,7 @@ String StreamPeerSerial::read_line(size_t max_length, String eol, bool utf8_enco
  	serialerror_t err = serialerror_success;
  	auto line = serial->readline(max_length, eol.utf8().get_data(), &err);
  	if(err != serialerror_success) {
- 		_on_error(__FUNCTION__, serial->getLastError().c_str());
+		call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
  	}
  
  	return "";
@@ -388,7 +387,7 @@ PackedStringArray StreamPeerSerial::read_lines(size_t max_length, String eol, bo
  	}
  
  	if(err != serialerror_success) {
- 		_on_error(__FUNCTION__, serial->getLastError().c_str());
+		call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
  	}
  
  	return lines;
@@ -400,7 +399,7 @@ Error StreamPeerSerial::set_port(const String &port) {
  	serialerror_t err = serialerror_success;
  	serial->setPort(port.ascii().get_data(), &err);
  	if(err != serialerror_success) {
- 		_on_error(__FUNCTION__, serial->getLastError().c_str());
+		call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
  		switch(err) {
  			case serialerror_argument:
  				result = ERR_INVALID_PARAMETER;
@@ -426,7 +425,9 @@ String StreamPeerSerial::get_port() const {
  	serialerror_t err = serialerror_success;
  	auto port = serial->getPort(&err);
  	if(err != serialerror_success) {
- 		const_cast<StreamPeerSerial *>(this)->_on_error(__FUNCTION__, serial->getLastError().c_str());
+ 		const_cast<StreamPeerSerial *>(this)->call_deferred(
+        "_on_error", String(__FUNCTION__), String(serial->getLastError().c_str())
+    );
  	}
  
  	return port.c_str();
@@ -448,7 +449,7 @@ Error StreamPeerSerial::set_baudrate(uint32_t baudrate) {
  	serialerror_t err = serialerror_success;
  	serial->setBaudrate(baudrate, &err);
  	if(err != serialerror_success) {
- 		_on_error(__FUNCTION__, serial->getLastError().c_str());
+		call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
  		return FAILED;
  	}
  
@@ -460,7 +461,9 @@ uint32_t StreamPeerSerial::get_baudrate() const {
  	serialerror_t err = serialerror_success;
  	auto baud = serial->getBaudrate(&err);
  	if(err != serialerror_success) {
- 		const_cast<StreamPeerSerial *>(this)->_on_error(__FUNCTION__, serial->getLastError().c_str());
+ 		const_cast<StreamPeerSerial *>(this)->call_deferred(
+        "_on_error", String(__FUNCTION__), String(serial->getLastError().c_str())
+    );
  	}
  
  	return baud;
@@ -471,7 +474,7 @@ Error StreamPeerSerial::set_bytesize(ByteSize bytesize) {
  	serialerror_t err = serialerror_success;
  	serial->setBytesize(bytesize_t(bytesize), &err);
  	if(err != serialerror_success) {
- 		_on_error(__FUNCTION__, serial->getLastError().c_str());
+		call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
  		return FAILED;
  	}
  
@@ -483,7 +486,9 @@ StreamPeerSerial::ByteSize StreamPeerSerial::get_bytesize() const {
  	serialerror_t err = serialerror_success;
  	auto sz = ByteSize(serial->getBytesize(&err));
  	if(err != serialerror_success) {
- 		const_cast<StreamPeerSerial *>(this)->_on_error(__FUNCTION__, serial->getLastError().c_str());
+ 		const_cast<StreamPeerSerial *>(this)->call_deferred(
+        "_on_error", String(__FUNCTION__), String(serial->getLastError().c_str())
+    );
  	}
  
  	return sz;
@@ -494,7 +499,7 @@ Error StreamPeerSerial::set_parity(Parity parity) {
  	serialerror_t err = serialerror_success;
  	serial->setParity(parity_t(parity), &err);
  	if(err != serialerror_success) {
- 		_on_error(__FUNCTION__, serial->getLastError().c_str());
+		call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
  		return FAILED;
 	}
 
@@ -506,7 +511,9 @@ StreamPeerSerial::Parity StreamPeerSerial::get_parity() const {
  	serialerror_t err = serialerror_success;
  	auto par = Parity(serial->getParity(&err));
  	if(err != serialerror_success) {
- 		const_cast<StreamPeerSerial *>(this)->_on_error(__FUNCTION__, serial->getLastError().c_str());
+ 		const_cast<StreamPeerSerial *>(this)->call_deferred(
+        "_on_error", String(__FUNCTION__), String(serial->getLastError().c_str())
+    );
  	}
  
  	return par;
@@ -517,7 +524,7 @@ Error StreamPeerSerial::set_stopbits(StopBits stopbits) {
  	serialerror_t err = serialerror_success;
  	serial->setStopbits(stopbits_t(stopbits), &err);
  	if(err != serialerror_success) {
- 		_on_error(__FUNCTION__, serial->getLastError().c_str());
+		call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
  		return FAILED;
  	}
  
@@ -529,7 +536,9 @@ StreamPeerSerial::StopBits StreamPeerSerial::get_stopbits() const {
  	serialerror_t err = serialerror_success;
  	auto bits = StopBits(serial->getStopbits(&err));
  	if(err != serialerror_success) {
- 		const_cast<StreamPeerSerial *>(this)->_on_error(__FUNCTION__, serial->getLastError().c_str());
+ 		const_cast<StreamPeerSerial *>(this)->call_deferred(
+        "_on_error", String(__FUNCTION__), String(serial->getLastError().c_str())
+    );
  	}
  
  	return bits;
@@ -540,7 +549,7 @@ Error StreamPeerSerial::set_flowcontrol(FlowControl flowcontrol) {
  	serialerror_t err = serialerror_success;
  	serial->setFlowcontrol(flowcontrol_t(flowcontrol), &err);
  	if(err != serialerror_success) {
- 		_on_error(__FUNCTION__, serial->getLastError().c_str());
+		call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
  		return FAILED;
  	}
  
@@ -552,7 +561,9 @@ StreamPeerSerial::FlowControl StreamPeerSerial::get_flowcontrol() const {
  	serialerror_t err = serialerror_success;
  	auto flow = FlowControl(serial->getFlowcontrol(&err));
  	if(err != serialerror_success) {
- 		const_cast<StreamPeerSerial *>(this)->_on_error(__FUNCTION__, serial->getLastError().c_str());
+ 		const_cast<StreamPeerSerial *>(this)->call_deferred(
+        "_on_error", String(__FUNCTION__), String(serial->getLastError().c_str())
+    );
  	}
  
  	return flow;
@@ -561,7 +572,7 @@ StreamPeerSerial::FlowControl StreamPeerSerial::get_flowcontrol() const {
 
 Error StreamPeerSerial::flush() {
  	if(serial->flush() != serialerror_success) {
- 		_on_error(__FUNCTION__, serial->getLastError().c_str());
+		call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
  		return FAILED;
 	}
 
@@ -571,7 +582,7 @@ Error StreamPeerSerial::flush() {
 
 Error StreamPeerSerial::flush_input() {
  	if(serial->flushInput() != serialerror_success) {
- 		_on_error(__FUNCTION__, serial->getLastError().c_str());
+		call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
  		return FAILED;
 	}
 
@@ -581,7 +592,7 @@ Error StreamPeerSerial::flush_input() {
 
 Error StreamPeerSerial::flush_output() {
  	if(serial->flushOutput() != serialerror_success) {
- 		_on_error(__FUNCTION__, serial->getLastError().c_str());
+		call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
  		return FAILED;
 	}
 
@@ -591,7 +602,7 @@ Error StreamPeerSerial::flush_output() {
 
 Error StreamPeerSerial::send_break(int duration) {
  	if(serial->sendBreak(duration) != serialerror_success) {
- 		_on_error(__FUNCTION__, serial->getLastError().c_str());
+		call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
  		return FAILED;
 	}
 
@@ -601,7 +612,7 @@ Error StreamPeerSerial::send_break(int duration) {
 
 Error StreamPeerSerial::set_break(bool level) {
  	if(serial->setBreak(level) != serialerror_success) {
- 		_on_error(__FUNCTION__, serial->getLastError().c_str());
+		call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
  		return FAILED;
 	}
 
@@ -611,7 +622,7 @@ Error StreamPeerSerial::set_break(bool level) {
 
 Error StreamPeerSerial::set_rts(bool level) {
  	if(serial->setRTS(level) != serialerror_success) {
- 		_on_error(__FUNCTION__, serial->getLastError().c_str());
+		call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
  		return FAILED;
 	}
 
@@ -621,7 +632,7 @@ Error StreamPeerSerial::set_rts(bool level) {
 
 Error StreamPeerSerial::set_dtr(bool level) {
  	if(serial->setDTR(level) != serialerror_success) {
- 		_on_error(__FUNCTION__, serial->getLastError().c_str());
+		call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
  		return FAILED;
 	}
 
@@ -633,7 +644,7 @@ bool StreamPeerSerial::wait_for_change() {
  	serialerror_t err = serialerror_success;
  	auto result = serial->waitForChange(&err);
  	if(err != serialerror_success) {
- 		_on_error(__FUNCTION__, serial->getLastError().c_str());
+		call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
 	}
 
 	return result;
@@ -644,7 +655,7 @@ bool StreamPeerSerial::get_cts() {
  	serialerror_t err = serialerror_success;
  	auto result = serial->getCTS(&err);
  	if(err != serialerror_success) {
- 		_on_error(__FUNCTION__, serial->getLastError().c_str());
+		call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
 	}
 
 	return result;
@@ -655,7 +666,7 @@ bool StreamPeerSerial::get_dsr() {
  	serialerror_t err = serialerror_success;
  	auto result = serial->getDSR(&err);
  	if(err != serialerror_success) {
- 		_on_error(__FUNCTION__, serial->getLastError().c_str());
+		call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
 	}
 
 	return result;
@@ -666,7 +677,7 @@ bool StreamPeerSerial::get_ri() {
  	serialerror_t err = serialerror_success;
  	auto result = serial->getRI(&err);
  	if(err != serialerror_success) {
- 		_on_error(__FUNCTION__, serial->getLastError().c_str());
+		call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
 	}
 
 	return result;
@@ -677,7 +688,7 @@ bool StreamPeerSerial::get_cd() {
  	serialerror_t err = serialerror_success;
  	auto result = serial->getCD(&err);
  	if(err != serialerror_success) {
- 		_on_error(__FUNCTION__, serial->getLastError().c_str());
+		call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
 	}
 
 	return result;
@@ -700,6 +711,7 @@ void StreamPeerSerial::_bind_methods() {
 	ClassDB::bind_static_method("StreamPeerSerial", D_METHOD("list_ports"), &StreamPeerSerial::list_ports);
 
 	ClassDB::bind_method(D_METHOD("_data_received", "data"), &StreamPeerSerial::_data_received);
+	ClassDB::bind_method(D_METHOD("_on_error", "where", "what"), &StreamPeerSerial::_on_error);
 	ClassDB::bind_method(D_METHOD("is_in_error"), &StreamPeerSerial::is_in_error);
 	ClassDB::bind_method(D_METHOD("get_last_error"), &StreamPeerSerial::get_last_error);
 
