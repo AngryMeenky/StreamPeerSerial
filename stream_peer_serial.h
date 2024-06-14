@@ -53,144 +53,147 @@ using namespace godot;
 using namespace serial;
 
 class StreamPeerSerial : public StreamPeerExtension {
-	GDCLASS(StreamPeerSerial, StreamPeerExtension);
+  GDCLASS(StreamPeerSerial, StreamPeerExtension);
 
-	static void _thread_func(void *p_user_data);
+  static void _thread_func(void *p_user_data);
 
-	Serial *serial;
-	int monitoring_interval = 10000;
-	std::atomic<bool> fine_working = false;
-	std::atomic<bool> monitoring_should_exit = true;
-	std::thread thread;
+  Serial *serial;
+  int monitoring_interval = 10000;
+  std::atomic<bool> fine_working = false;
+  std::atomic<bool> monitoring_should_exit = true;
+  std::thread thread;
 
-	String error_message = "";
+  String error_message = "";
 
-	void _data_received(const PackedByteArray &buf);
+  void _data_received(const PackedByteArray &buf);
 
 public:
-	enum ByteSize {
-		BYTESIZE_5 = fivebits,
-		BYTESIZE_6 = sixbits,
-		BYTESIZE_7 = sevenbits,
-		BYTESIZE_8 = eightbits,
-	};
-	enum Parity {
-		PARITY_NONE = parity_none,
-		PARITY_ODD = parity_odd,
-		PARITY_EVEN = parity_even,
-		PARITY_MARK = parity_mark,
-		PARITY_SPACE = parity_space,
-	};
-	enum StopBits {
-		STOPBITS_1 = stopbits_one,
-		STOPBITS_2 = stopbits_two,
-		STOPBITS_1P5 = stopbits_one_point_five,
-	};
-	enum FlowControl {
-		FLOWCONTROL_NONE = flowcontrol_none,
-		FLOWCONTROL_SOFTWARE = flowcontrol_software,
-		FLOWCONTROL_HARDWARE = flowcontrol_hardware,
-	};
+  enum ByteSize {
+    BYTESIZE_5 = fivebits,
+    BYTESIZE_6 = sixbits,
+    BYTESIZE_7 = sevenbits,
+    BYTESIZE_8 = eightbits,
+  };
+  enum Parity {
+    PARITY_NONE = parity_none,
+    PARITY_ODD = parity_odd,
+    PARITY_EVEN = parity_even,
+    PARITY_MARK = parity_mark,
+    PARITY_SPACE = parity_space,
+  };
+  enum StopBits {
+    STOPBITS_1 = stopbits_one,
+    STOPBITS_2 = stopbits_two,
+    STOPBITS_1P5 = stopbits_one_point_five,
+  };
+  enum FlowControl {
+    FLOWCONTROL_NONE = flowcontrol_none,
+    FLOWCONTROL_SOFTWARE = flowcontrol_software,
+    FLOWCONTROL_HARDWARE = flowcontrol_hardware,
+  };
 
-  StreamPeerSerial(const String &port = "",
-			uint32_t baudrate = 9600,
-			uint32_t timeout = 0,
-			ByteSize bytesize = BYTESIZE_8,
-			Parity parity = PARITY_NONE,
-			StopBits stopbits = STOPBITS_1,
-			FlowControl flowcontrol = FLOWCONTROL_NONE);
+  StreamPeerSerial(const String      &port        = "",
+                         uint32_t     baudrate    = 9600,
+                         uint32_t     timeout     = 0,
+                         ByteSize     bytesize    = BYTESIZE_8,
+                         Parity       parity      = PARITY_NONE,
+                         StopBits     stopbits    = STOPBITS_1,
+                         FlowControl  flowcontrol = FLOWCONTROL_NONE);
 
-	~StreamPeerSerial();
+  ~StreamPeerSerial();
 
-	static Dictionary list_ports();
+  static Dictionary list_ports();
+
+  static Ref<StreamPeerSerial> open_port(const String &, uint32_t, uint32_t,
+                                               ByteSize, Parity,   StopBits, FlowControl);
 
   Error _get_data(uint8_t *p_buffer, int32_t r_bytes, int32_t *r_received) override;
   Error _get_partial_data(uint8_t *p_buffer, int r_bytes, int32_t *r_received) override;
   Error _put_data(const uint8_t *p_data, int32_t p_bytes, int32_t *r_sent) override;
   Error _put_partial_data(const uint8_t *p_data, int32_t p_bytes, int32_t *r_sent) override;
 
-	int32_t _get_available_bytes() const override;
+  int32_t _get_available_bytes() const override;
 
-	bool is_in_error() { return is_open() && !fine_working; }
-	inline String get_last_error() { return error_message; }
-	void _on_error(const String &where, const String &what);
+  bool is_in_error() { return is_open() && !fine_working; }
+  inline String get_last_error() { return error_message; }
+  void _on_error(const String &where, const String &what);
 
-	Error start_monitoring(uint64_t interval_in_usec = 10000);
-	void stop_monitoring();
+  Error start_monitoring(uint64_t interval_in_usec = 10000);
+  void stop_monitoring();
 
-	Error open(String port = "");
+  Error open(String port = "");
 
-	bool is_open() const;
+  bool is_open() const;
 
-	void close();
+  void close();
 
-	bool wait_readable();
+  bool wait_readable();
 
-	void wait_byte_times(size_t count);
+  void wait_byte_times(size_t count);
 
-	PackedByteArray read_raw(size_t size = 1);
+  PackedByteArray read_raw(size_t size = 1);
 
-	size_t write_raw(const PackedByteArray &data);
+  size_t write_raw(const PackedByteArray &data);
 
-	String read_line(size_t size = 65535, String eol = "\n", bool utf8_encoding = false);
-	PackedStringArray read_lines(size_t size = 65535, String eol = "\n", bool utf8_encoding = false);
+  String read_line(size_t size = 65535, String eol = "\n", bool utf8_encoding = false);
+  PackedStringArray read_lines(size_t size = 65535, String eol = "\n", bool utf8_encoding = false);
 
-	Error set_port(const String &port);
+  Error set_port(const String &port);
 
-	String get_port() const;
+  String get_port() const;
 
-	Error set_timeout(uint32_t timeout);
+  Error set_timeout(uint32_t timeout);
 
-	uint32_t get_timeout() const;
+  uint32_t get_timeout() const;
 
-	Error set_baudrate(uint32_t baudrate);
+  Error set_baudrate(uint32_t baudrate);
 
-	uint32_t get_baudrate() const;
+  uint32_t get_baudrate() const;
 
-	Error set_bytesize(ByteSize bytesize);
+  Error set_bytesize(ByteSize bytesize);
 
-	ByteSize get_bytesize() const;
+  ByteSize get_bytesize() const;
 
-	Error set_parity(Parity parity);
+  Error set_parity(Parity parity);
 
-	Parity get_parity() const;
+  Parity get_parity() const;
 
-	Error set_stopbits(StopBits stopbits);
+  Error set_stopbits(StopBits stopbits);
 
-	StopBits get_stopbits() const;
+  StopBits get_stopbits() const;
 
-	Error set_flowcontrol(FlowControl flowcontrol);
+  Error set_flowcontrol(FlowControl flowcontrol);
 
-	FlowControl get_flowcontrol() const;
+  FlowControl get_flowcontrol() const;
 
-	Error flush();
+  Error flush();
 
-	Error flush_input();
+  Error flush_input();
 
-	Error flush_output();
+  Error flush_output();
 
-	Error send_break(int duration);
+  Error send_break(int duration);
 
-	Error set_break(bool level = true);
+  Error set_break(bool level = true);
 
-	Error set_rts(bool level = true);
+  Error set_rts(bool level = true);
 
-	Error set_dtr(bool level = true);
+  Error set_dtr(bool level = true);
 
-	bool wait_for_change();
+  bool wait_for_change();
 
-	bool get_cts();
+  bool get_cts();
 
-	bool get_dsr();
+  bool get_dsr();
 
-	bool get_ri();
+  bool get_ri();
 
-	bool get_cd();
+  bool get_cd();
 
 protected:
-	String _to_string() const;
+  String _to_string() const;
 
-	static void _bind_methods();
+  static void _bind_methods();
 };
 
 VARIANT_ENUM_CAST(StreamPeerSerial::ByteSize);
