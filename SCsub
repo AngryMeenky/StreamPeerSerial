@@ -9,31 +9,19 @@ env_serial = env_modules.Clone()
 
 serial_obj = []
 
-serial_dir = "serial/"
-serial_sources = ["src/serial.cc"]
+serial_dir = "libserialport/"
+serial_sources = ["serial_wrapper.c"]
 
 if env["platform"] == "windows":
-    serial_sources.append("src/impl/win.cc")
-    serial_sources.append("src/impl/list_ports/list_ports_win.cc")
-    if env.get("is_msvc", True):
+    if env.get("is_msvc", False):
         env.Append(LINKFLAGS=["setupapi.lib", "Advapi32.lib"])
     else:
-        env.Append(LIBS=["setupapi", "Advapi32"])
-elif env["platform"].startswith("linux"):
-    serial_sources.append("src/impl/unix.cc")
-    serial_sources.append("src/impl/list_ports/list_ports_linux.cc")
-    env.Append(LIBS=["rt", "pthread"])
-elif env["platform"] == "osx":
-    serial_sources.append("src/impl/unix.cc")
-    serial_sources.append("src/impl/list_ports/list_ports_osx.cc")
+        env.Append(LIBS=["setupapi", "advapi32"])
 print("Build for {0}.".format(env["platform"]))
 
-serial_sources = [serial_dir + file for file in serial_sources]
+env_serial.Prepend(CPPPATH=[serial_dir])
 
-env_serial.Prepend(CPPPATH=[serial_dir + "include"])
-
-env_serial = env_serial.Clone()
-env_serial.disable_warnings()
+#env_serial.disable_warnings()
 env_serial.add_source_files(serial_obj, serial_sources)
 env.modules_sources += serial_obj
 
@@ -46,3 +34,4 @@ env.modules_sources += module_obj
 
 # Needed to force rebuilding the module files when the serial library is updated.
 env.Depends(module_obj, serial_obj)
+

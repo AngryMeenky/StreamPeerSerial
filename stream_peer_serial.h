@@ -32,12 +32,15 @@
 #define STREAM_PEER_SERIAL_H
 
 #ifdef GDEXTENSION
+#include <godot_cpp/classes/thread.hpp>
 #include <godot_cpp/templates/vector.hpp>
 #include <godot_cpp/variant/builtin_types.hpp>
 #include <godot_cpp/classes/stream_peer_extension.hpp>
+#include <godot_cpp/variant/callable_method_pointer.hpp>
 
 using namespace godot;
 #else
+#include "core/os/thread.h"
 #include "core/io/stream_peer.h"
 #include "core/string/ustring.h"
 #include "core/templates/vector.h"
@@ -45,67 +48,45 @@ using namespace godot;
 #include "core/variant/dictionary.h"
 #endif
 
-#include "serial/serial.h"
+#include "serial_port_config.h"
+#include "libserialport/libserialport.h"
 
 #include <atomic>
-#include <thread>
 
-using namespace serial;
 
 class StreamPeerSerial : public StreamPeerExtension {
   GDCLASS(StreamPeerSerial, StreamPeerExtension);
 
-  static void _thread_func(void *p_user_data);
+  void _thread_func();
 
-  Serial *serial;
-  int monitoring_interval = 10000;
+  Thread thread;
+  Callable worker;
+  String port_name = "";
+  sp_port *serial = nullptr;
+  sp_event_set *readable = nullptr;
+  sp_event_set *writable = nullptr;
+  int monitoring_interval = 50; // milliseconds
   std::atomic<bool> fine_working = false;
   std::atomic<bool> monitoring_should_exit = true;
-  std::thread thread;
 
-  String error_message = "";
 
   void _data_received(const PackedByteArray &buf);
+  void _process_error(const char *func, sp_return err) const;
+  void _defer_error(const char *func, sp_return err) const;
 
 public:
-  enum ByteSize {
-    BYTESIZE_5 = fivebits,
-    BYTESIZE_6 = sixbits,
-    BYTESIZE_7 = sevenbits,
-    BYTESIZE_8 = eightbits,
-  };
-  enum Parity {
-    PARITY_NONE = parity_none,
-    PARITY_ODD = parity_odd,
-    PARITY_EVEN = parity_even,
-    PARITY_MARK = parity_mark,
-    PARITY_SPACE = parity_space,
-  };
-  enum StopBits {
-    STOPBITS_1 = stopbits_one,
-    STOPBITS_2 = stopbits_two,
-    STOPBITS_1P5 = stopbits_one_point_five,
-  };
-  enum FlowControl {
-    FLOWCONTROL_NONE = flowcontrol_none,
-    FLOWCONTROL_SOFTWARE = flowcontrol_software,
-    FLOWCONTROL_HARDWARE = flowcontrol_hardware,
+  enum Transport {
+    NATIVE    = SP_TRANSPORT_NATIVE,
+    USB       = SP_TRANSPORT_USB,
+    BLUETOOTH = SP_TRANSPORT_BLUETOOTH,
   };
 
-  StreamPeerSerial(const String      &port        = "",
-                         uint32_t     baudrate    = 9600,
-                         uint32_t     timeout     = 0,
-                         ByteSize     bytesize    = BYTESIZE_8,
-                         Parity       parity      = PARITY_NONE,
-                         StopBits     stopbits    = STOPBITS_1,
-                         FlowControl  flowcontrol = FLOWCONTROL_NONE);
-
+  StreamPeerSerial();
   ~StreamPeerSerial();
 
   static Dictionary list_ports();
 
-  static Ref<StreamPeerSerial> open_port(const String &, uint32_t, uint32_t,
-                                               ByteSize, Parity,   StopBits, FlowControl);
+  static Ref<StreamPeerSerial> open_port(const String &, const Ref<SerialPortConfig> &config);
 
   Error _get_data(uint8_t *p_buffer, int32_t r_bytes, int32_t *r_received) override;
   Error _get_partial_data(uint8_t *p_buffer, int r_bytes, int32_t *r_received) override;
@@ -114,80 +95,50 @@ public:
 
   int32_t _get_available_bytes() const override;
 
-  bool is_in_error() { return is_open() && !fine_working; }
-  inline String get_last_error() { return error_message; }
   void _on_error(const String &where, const String &what);
 
   Error start_monitoring(uint64_t interval_in_usec = 10000);
-  void stop_monitoring();
+  void  stop_monitoring();
 
-  Error open(String port = "");
+  Error  open(String port = "");
+  String get_port() const;
+  bool   is_open() const;
+  void   close();
 
-  bool is_open() const;
-
-  void close();
-
-  bool wait_readable();
-
-  void wait_byte_times(size_t count);
+  bool wait_readable(int64_t ms);
+  bool wait_writable(int64_t ms);
 
   PackedByteArray read_raw(size_t size = 1);
+  size_t          write_raw(const PackedByteArray &data);
+  Error           flush();
 
-  size_t write_raw(const PackedByteArray &data);
+  Error                 apply_config(const Ref<SerialPortConfig> &config);
+  Ref<SerialPortConfig> get_config();
 
-  String read_line(size_t size = 65535, String eol = "\n", bool utf8_encoding = false);
-  PackedStringArray read_lines(size_t size = 65535, String eol = "\n", bool utf8_encoding = false);
 
-  Error set_port(const String &port);
+  Error   set_baudrate(int64_t baudrate);
+  int64_t get_baudrate() const;
 
-  String get_port() const;
+  Error   set_data_bits(int64_t bytesize);
+  int64_t get_data_bits() const;
 
-  Error set_timeout(uint32_t timeout);
+  Error                    set_parity(SerialPortConfig::Parity parity);
+  SerialPortConfig::Parity get_parity() const;
 
-  uint32_t get_timeout() const;
+  Error   set_stop_bits(int64_t stopbits);
+  int64_t get_stop_bits() const;
 
-  Error set_baudrate(uint32_t baudrate);
+  Error set_flow_control(SerialPortConfig::FlowControl flowcontrol);
 
-  uint32_t get_baudrate() const;
+  Error set_rts(SerialPortConfig::Rts level = SerialPortConfig::RTS_ON);
+  Error set_cts(SerialPortConfig::Cts level = SerialPortConfig::CTS_FLOW);
 
-  Error set_bytesize(ByteSize bytesize);
-
-  ByteSize get_bytesize() const;
-
-  Error set_parity(Parity parity);
-
-  Parity get_parity() const;
-
-  Error set_stopbits(StopBits stopbits);
-
-  StopBits get_stopbits() const;
-
-  Error set_flowcontrol(FlowControl flowcontrol);
-
-  FlowControl get_flowcontrol() const;
-
-  Error flush();
-
-  Error flush_input();
-
-  Error flush_output();
-
-  Error send_break(int duration);
-
-  Error set_break(bool level = true);
-
-  Error set_rts(bool level = true);
-
-  Error set_dtr(bool level = true);
-
-  bool wait_for_change();
+  Error set_dtr(SerialPortConfig::Dtr level = SerialPortConfig::DTR_ON);
+  Error set_dsr(SerialPortConfig::Dsr level = SerialPortConfig::DSR_FLOW);
 
   bool get_cts();
-
   bool get_dsr();
-
   bool get_ri();
-
   bool get_cd();
 
 protected:
@@ -196,9 +147,6 @@ protected:
   static void _bind_methods();
 };
 
-VARIANT_ENUM_CAST(StreamPeerSerial::ByteSize);
-VARIANT_ENUM_CAST(StreamPeerSerial::Parity);
-VARIANT_ENUM_CAST(StreamPeerSerial::StopBits);
-VARIANT_ENUM_CAST(StreamPeerSerial::FlowControl);
+VARIANT_ENUM_CAST(StreamPeerSerial::Transport);
 
 #endif // STREAM_PEER_SERIAL_H

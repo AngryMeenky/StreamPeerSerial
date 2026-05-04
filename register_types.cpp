@@ -30,6 +30,7 @@
 
 #include "register_types.h"
 
+#include "serial_port_config.h"
 #include "stream_peer_serial.h"
 
 void initialize_stream_peer_serial_module(ModuleInitializationLevel p_level) {
@@ -37,6 +38,7 @@ void initialize_stream_peer_serial_module(ModuleInitializationLevel p_level) {
 		return;
 	}
 
+	GDREGISTER_CLASS(SerialPortConfig);
 	GDREGISTER_VIRTUAL_CLASS(StreamPeerSerial);
 }
 

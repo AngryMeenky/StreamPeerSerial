@@ -5,33 +5,23 @@ import sys
 env = SConscript("godot-cpp/SConstruct")
 
 env.Append(CPPDEFINES=["GDEXTENSION"])
-env.Append(CPPPATH=[".", "serial/include"])
+env.Append(CPPPATH=[".", "libserialport"])
 
 addon_sources = [
     "register_types.cpp",
-    "stream_peer_serial.cpp"
+    "stream_peer_serial.cpp",
+    "serial_port_config.cpp"
 ]
 
-serial_dir = "serial/"
-serial_sources = ["src/serial.cc"]
+serial_dir = "libserialport/"
+serial_sources = ["serial_wrapper.c"]
 
 if env["platform"] == "windows":
-    serial_sources.append("src/impl/win.cc")
-    serial_sources.append("src/impl/list_ports/list_ports_win.cc")
-    if env.get("is_msvc", True):
+    if env.get("is_msvc", False):
         env.Append(LINKFLAGS=["setupapi.lib", "Advapi32.lib"])
     else:
-        env.Append(LIBS=["setupapi", "Advapi32"])
-elif env["platform"].startswith("linux"):
-    serial_sources.append("src/impl/unix.cc")
-    serial_sources.append("src/impl/list_ports/list_ports_linux.cc")
-    env.Append(LIBS=["rt", "pthread"])
-elif env["platform"] == "macos":
-    serial_sources.append("src/impl/unix.cc")
-    serial_sources.append("src/impl/list_ports/list_ports_osx.cc")
+        env.Append(LIBS=["setupapi", "advapi32"])
 print("Build for {0}.".format(env["platform"]))
-
-serial_sources = [serial_dir + file for file in serial_sources]
 
 addon_sources.append(serial_sources)
 addon_name = "StreamPeerSerial"

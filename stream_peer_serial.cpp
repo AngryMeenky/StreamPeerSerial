@@ -33,6 +33,7 @@
 #ifdef GDEXTENSION
 #include <godot_cpp/classes/os.hpp>
 #include <godot_cpp/core/class_db.hpp>
+#include <godot_cpp/variant/utility_functions.hpp>
 
 using namespace godot;
 #else
@@ -42,280 +43,360 @@ using namespace godot;
 #endif
 #include <string>
 
-using namespace std::chrono;
 
 void StreamPeerSerial::_data_received(const PackedByteArray &buf) {
   emit_signal("data_received", buf);
 }
 
 
-StreamPeerSerial::StreamPeerSerial(const String &port, uint32_t baudrate, uint32_t timeout, ByteSize bytesize, Parity parity, StopBits stopbits, FlowControl flowcontrol) {
-  serialerror_t err = serialerror_success;
-  serial = new Serial(port.ascii().get_data(),
-      baudrate, Timeout::simpleTimeout(timeout), bytesize_t(bytesize),
-      parity_t(parity), stopbits_t(stopbits), flowcontrol_t(flowcontrol), &err);
-  if(err != serialerror_success) {
-    call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
-  }
+StreamPeerSerial::StreamPeerSerial():
+  thread() {
 }
 
 
 StreamPeerSerial::~StreamPeerSerial() {
-  close();
   stop_monitoring();
-  delete serial;
+  close();
+  if(serial != nullptr) {
+    sp_free_port(serial);
+    serial = nullptr;
+  }
 }
 
 
 Dictionary StreamPeerSerial::list_ports() {
-  std::vector<PortInfo> ports_info = serial::list_ports();
-
+  sp_port **ports = nullptr;
   Dictionary info_dict;
-  for (PortInfo port : ports_info) {
-    Dictionary info;
-    info["desc"] = port.description.c_str();
-    info["hw_id"] = port.hardware_id.c_str();
-    info_dict[port.port.c_str()] = Variant(info);
+  if(sp_list_ports(&ports) == SP_OK) {
+    for(int idx = 0; ports[idx]; ++idx) {
+      Dictionary info;
+      sp_port *port = ports[idx];
+      info["desc"] = sp_get_port_description(port);
+      switch(sp_get_port_transport(port)) {
+        case SP_TRANSPORT_NATIVE:
+          info["transport"] = "native";
+          info["hw_id"] = "n/a";
+        break;
+        case SP_TRANSPORT_USB:
+          info["transport"]    = "USB";
+          info["manufacturer"] = sp_get_port_usb_manufacturer(port);
+          info["product"] = sp_get_port_usb_product(port);
+          info["serial_number"] = sp_get_port_usb_serial(port);
+          if(int bus, addr; sp_get_port_usb_bus_address(port, &bus, &addr) == SP_OK) {
+            info["bus"] = bus;
+            info["address"] = addr;
+          }
+          if(int vid, pid; sp_get_port_usb_vid_pid(port, &vid, &pid) == SP_OK) {
+            char id[16];
+            snprintf(&id[0], sizeof(id) - 1, "%04X:%04X", vid, pid);
+            info["vendor_id"] = vid;
+            info["product_id"] = pid;
+            info["hw_id"] = &id[0];
+          }
+          else {
+            info["hw_id"] = "n/a";
+          }
+        break;
+        case SP_TRANSPORT_BLUETOOTH:
+          info["transport"] = "Bluetooth";
+          info["address"] = sp_get_port_bluetooth_address(port);
+          info["hw_id"] = info["address"];
+        break;
+      }
+
+      //UtilityFunctions::print("Found port: ", info);
+      info_dict[sp_get_port_name(port)] = Variant(info);
+    }
+
+    sp_free_port_list(ports);
   }
 
   return info_dict;
 }
 
 
-Ref<StreamPeerSerial> StreamPeerSerial::open_port(
-  const String   &port, uint32_t baud,   uint32_t timeout,
-        ByteSize  size, Parity   parity, StopBits stop,    FlowControl flow) {
-  Ref<StreamPeerSerial> srs;
+Ref<StreamPeerSerial> StreamPeerSerial::open_port(const String &name, const Ref<SerialPortConfig> &conf) {
+  Ref<StreamPeerSerial> sps;
+  sps.instantiate();
 
-  // only attempt to open the port if the string isn't empty
-  if(!port.is_empty()) {
-    srs.instantiate();
-
-    // use goto without using goto
-    while(srs.is_valid()) {
-      serialerror_t err = serialerror_success;
-      srs->serial->setBaudrate(baud, &err);
-      if(err != serialerror_success) {
-        srs.unref();
-        break;
-      }
-
-      // setting the timeout can't fail
-      srs->serial->setTimeout(Timeout::max(), timeout, 0, timeout, 0);
-
-      srs->serial->setBytesize(bytesize_t(size), &err);
-      if(err != serialerror_success) {
-        srs.unref();
-        break;
-      }
-
-      srs->serial->setParity(parity_t(parity), &err);
-      if(err != serialerror_success) {
-        srs.unref();
-        break;
-      }
-
-      srs->serial->setStopbits(stopbits_t(stop), &err);
-      if(err != serialerror_success) {
-        srs.unref();
-        break;
-      }
-
-      srs->serial->setFlowcontrol(flowcontrol_t(flow), &err);
-      if(err != serialerror_success) {
-        srs.unref();
-        break;
-      }
-
-      // attempt to open the serial device
-      srs->serial->setPort(port.ascii().get_data(), &err);
-      if(err != serialerror_success || srs->serial->open() != serialerror_success) {
-        srs.unref();
-        break;
-      }
-
-      break;
+  if(sps->open(name) == OK) {
+    if(conf.is_valid() && sps->apply_config(conf) != OK) {
+      sps->close();
+      sps.unref();
     }
   }
+  else {
+    sps.unref();
+  }
 
-  return srs;
+  return sps;
 }
 
 
 void StreamPeerSerial::_on_error(const String &where, const String &what) {
-  fine_working = false;
-  error_message = "[" + get_port() + "] Error at " + where + ": " + what;
-  // ERR_FAIL_MSG(error_message);
+  fine_working.store(false);
   emit_signal("got_error", where, what);
 }
 
 
-Error StreamPeerSerial::start_monitoring(uint64_t interval_in_usec) {
+Error StreamPeerSerial::start_monitoring(uint64_t interval_in_msec) {
   ERR_FAIL_COND_V_MSG(!monitoring_should_exit, ERR_ALREADY_IN_USE, "Monitor already started.");
+  //UtilityFunctions::print("Monitoring starting: ", interval_in_msec);
   stop_monitoring();
   monitoring_should_exit = false;
-  monitoring_interval = interval_in_usec;
-  thread = std::thread(_thread_func, this);
-  fine_working = is_open();
+  monitoring_interval = interval_in_msec;
+  if(!worker.is_valid()) {
+    worker = create_custom_callable_function_pointer(this, &StreamPeerSerial::_thread_func);
+  }
+  thread.start(worker);
 
   return OK;
 }
 
 
 void StreamPeerSerial::stop_monitoring() {
+  //UtilityFunctions::print("Monitoring stoping");
   monitoring_should_exit = true;
-  if(thread.joinable()) {
-    thread.join();
+  if(thread.is_started()) {
+    thread.wait_to_finish();
   }
 }
 
 
-void StreamPeerSerial::_thread_func(void *p_user_data) {
-  StreamPeerSerial *serial_port = static_cast<StreamPeerSerial *>(p_user_data);
-
-  while(!serial_port->monitoring_should_exit) {
-    time_point time_start = system_clock::now();
-
-    if(serial_port->fine_working && serial_port->_get_available_bytes() > 0) {
-       serial_port->call_deferred(
-         "_data_received", serial_port->read_raw(serial_port->_get_available_bytes())
-       );
+void StreamPeerSerial::_thread_func() {
+  // set up for event monitoring
+  sp_event_set *events = nullptr;
+  if(sp_new_event_set(&events) == SP_OK) {
+    constexpr auto event_bits = static_cast<sp_event>(SP_EVENT_RX_READY | SP_EVENT_ERROR);
+    if(sp_add_port_events(events, serial, event_bits) != SP_OK) {
+      sp_free_event_set(events);
+      events = nullptr;
     }
+  }
 
-    time_t time_elapsed = duration_cast<microseconds>(system_clock::now() - time_start).count();
-    if(time_elapsed < serial_port->monitoring_interval) {
-      std::this_thread::sleep_for(microseconds(serial_port->monitoring_interval - time_elapsed));
+  while(!monitoring_should_exit.load()) {
+    if(int avail; fine_working.load() && (avail = _get_available_bytes()) > 0) {
+      // data is available to read
+      call_deferred("_data_received", read_raw(avail));
     }
+    else if(avail < 0) {
+      // port is in an error state
+      break; // don't perform the monitoring any longer
+    }
+    else if(events != nullptr) {
+      // wait for an event to occur
+      if(sp_wait(events, monitoring_interval) != SP_OK) {
+        goto delay;
+      }
+    }
+    else {
+delay:
+      // just do a simple sleep if all else fails
+      OS::get_singleton()->delay_msec(monitoring_interval);
+    }
+  }
+
+  if(events != nullptr) {
+    sp_free_event_set(events);
+    events = nullptr;
   }
 }
 
 
-Error StreamPeerSerial::open(String port) {
-  error_message = "";
-  if(serial->isOpen()) {
+Error StreamPeerSerial::open(String name) {
+  // only attempt to open the port if the string isn't empty
+  if(!name.is_empty()) {
+    sp_port *port = nullptr;
+    if(auto err = sp_get_port_by_name(name.utf8().get_data(), &port); err != SP_OK) {
+      _process_error(__FUNCTION__, err);
+    }
+
+    if(port == nullptr) {
+      return ERR_CANT_RESOLVE; // couldn't find or couldn't copy port
+    }
+
+    if(auto err = sp_open(port, SP_MODE_READ_WRITE); err != SP_OK) {
+      _process_error(__FUNCTION__, err);
+      sp_free_port(port);
+      return ERR_CANT_OPEN; // can't open the actual serial port
+    }
+
+    // replace any previously opened serial port
     close();
-  }
- 
-  if(!port.is_empty() && set_port(port) != OK) {
-    return FAILED;
-  }
-
-  if(auto err = serial->open(); err != serialerror_success) {
-    call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
-    switch(err) {
-      case serialerror_io_failed:
-        return ERR_CANT_OPEN;
-      break;
-      case serialerror_serial:
-        return ERR_ALREADY_IN_USE;
-      break;
-      case serialerror_argument:
-        return ERR_INVALID_PARAMETER;
-      break;
-      default:
-        return FAILED;
-      break;
+    if(sp_new_event_set(&readable) == SP_OK) {
+      constexpr auto events = static_cast<sp_event>(SP_EVENT_RX_READY | SP_EVENT_ERROR);
+      if(sp_add_port_events(readable, port, events) != SP_OK) {
+        sp_free_event_set(readable);
+        readable = nullptr;
+      }
     }
+
+    if(sp_new_event_set(&writable) == SP_OK) {
+      if(sp_add_port_events(writable, port, SP_EVENT_TX_READY) != SP_OK) {
+        sp_free_event_set(writable);
+        writable = nullptr;
+      }
+    }
+
+    serial = port;
+    port_name = name;
+    fine_working.store(true);
+    emit_signal("opened", name);
+    return OK;
   }
 
-  fine_working = true;
-  emit_signal("opened", port);
-  return OK;
+  return ERR_PARAMETER_RANGE_ERROR;
 }
 
 
 bool StreamPeerSerial::is_open() const {
-  return serial->isOpen();
+  return serial != nullptr;
+}
+
+
+void StreamPeerSerial::_process_error(const char *func, sp_return err) const {
+  switch(err) {
+    case SP_ERR_ARG:
+      const_cast<StreamPeerSerial *>(this)->_on_error(func, "Invalid Argument");
+    break;
+
+    case SP_ERR_FAIL: {
+      auto msg = sp_last_error_message();
+      const_cast<StreamPeerSerial *>(this)->_on_error(func, msg);
+      sp_free_error_message(msg);
+    } break;
+
+    case SP_ERR_MEM:
+      const_cast<StreamPeerSerial *>(this)->_on_error(func, "Allocation Failure");
+    break;
+
+    case SP_ERR_SUPP:
+      const_cast<StreamPeerSerial *>(this)->_on_error(func, "Operation Not Supported");
+    break;
+  }
+}
+
+
+void StreamPeerSerial::_defer_error(const char *func, sp_return err) const {
+  switch(err) {
+    case SP_ERR_ARG:
+      const_cast<StreamPeerSerial *>(this)->call_deferred(
+          "_on_error", String(func), String("Invalid Argument")
+      );
+    break;
+
+    case SP_ERR_FAIL: {
+      auto msg = sp_last_error_message();
+      const_cast<StreamPeerSerial *>(this)->call_deferred("_on_error", String(func), String(msg));
+      sp_free_error_message(msg);
+    } break;
+
+    case SP_ERR_MEM:
+      const_cast<StreamPeerSerial *>(this)->call_deferred(
+          "_on_error", String(func), String("Allocation Failure")
+      );
+    break;
+
+    case SP_ERR_SUPP:
+      const_cast<StreamPeerSerial *>(this)->call_deferred(
+          "_on_error", String(func), String("Operation Not Supported")
+      );
+    break;
+  }
 }
 
 
 void StreamPeerSerial::close() {
-  if(serial->close() != serialerror_success) {
-    _on_error(__FUNCTION__, serial->getLastError().c_str());
+  if(serial) {
+    if(auto err = sp_close(serial); err != SP_OK) {
+      _process_error(__FUNCTION__, err);
+    }
+
+    sp_free_event_set(readable);
+    sp_free_event_set(writable);
+    sp_free_port(serial);
+    readable = nullptr;
+    writable = nullptr;
+    serial = nullptr;
+
+    emit_signal("closed", port_name);
+    port_name = "";
   }
 
-  fine_working = false;
-  emit_signal("closed", serial->getPort().c_str());
+  fine_working.store(false);
 }
 
 
 int32_t StreamPeerSerial::_get_available_bytes() const {
-  serialerror_t err = serialerror_success;
-  auto retVal = serial->available(&err);
-  if(err != serialerror_success) {
-    const_cast<StreamPeerSerial *>(this)->call_deferred(
-       "_on_error", String(__FUNCTION__), String(serial->getLastError().c_str())
-    );
+  if(serial != nullptr) {
+    if(auto retVal = sp_input_waiting(serial); retVal < 0) {
+      _defer_error(__FUNCTION__, retVal);
+      UtilityFunctions::printerr("Can't determine available bytes for: ", port_name);
+    }
+    else {
+      //UtilityFunctions::print(port_name, " -> ", retVal);
+      return retVal;
+    }
   }
 
-  return retVal;
+  return 0;
 }
 
 
-bool StreamPeerSerial::wait_readable() {
-  serialerror_t err = serialerror_success;
-  auto retVal = serial->waitReadable(&err);
-  if(err != serialerror_success) {
-    call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
+bool StreamPeerSerial::wait_readable(int64_t ms) {
+  if(auto err = sp_wait(readable, ms < 0 ? 0 : ms); err != SP_OK) {
+    _defer_error(__FUNCTION__, err);
+    return false;
   }
- 
-  return retVal;
+
+  return true;
 }
 
 
-void StreamPeerSerial::wait_byte_times(size_t count) {
-  serial->waitByteTimes(count);
+bool StreamPeerSerial::wait_writable(int64_t ms) {
+  if(auto err = sp_wait(writable, ms < 0 ? 0 : ms); err != SP_OK) {
+    _defer_error(__FUNCTION__, err);
+    return false;
+  }
+
+  return true;
 }
 
 
 PackedByteArray StreamPeerSerial::read_raw(size_t size) {
   PackedByteArray raw;
-  std::vector<uint8_t> buf_temp;
-  serialerror_t err = serialerror_success;
-  size_t bytes_read = serial->read(buf_temp, size, &err);
+  raw.resize(size);
 
-  if (bytes_read > 0 && raw.resize(bytes_read) == OK) {
-    memcpy(raw.ptrw(), (const char *)buf_temp.data(), bytes_read);
-    call_deferred("_on_error", String(__FUNCTION__), String("Unable to allocate space"));
+  int32_t bytes_read = 0;
+  int32_t request = static_cast<int32_t>(size);
+  auto err = _get_data(raw.ptrw(), static_cast<int32_t>(size), &bytes_read);
+  if(bytes_read < request) {
+    raw.resize(bytes_read);
   }
 
-  if(err != serialerror_success) {
-    call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
-  }
- 
   return raw;
 }
 
 
 Error StreamPeerSerial::_get_data(uint8_t *p_buffer, int32_t bytes, int32_t *r_received) {
-   if(bytes < 0) {
-     return ERR_PARAMETER_RANGE_ERROR;
-   }
-
-   Error result = OK;
-   serialerror_t err = serialerror_success;
-   if((*r_received = serial->read(p_buffer, bytes, &err)) == 0) {
-     result = ERR_BUSY;
-   }
-
-   if(err != serialerror_success) {
-     call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
-     switch(err) {
-       case serialerror_not_opened:
-         result = ERR_FILE_CANT_OPEN;
-       break;
-       case serialerror_io_failed:
-         result = ERR_FILE_CANT_READ;
-       break;
-       case serialerror_serial:
-         result = ERR_FILE_CORRUPT;
-       break;
-       default:
-         result = ERR_UNAVAILABLE;
-       break;
-     }
+  if(bytes < 0) {
+    return ERR_PARAMETER_RANGE_ERROR;
   }
 
+  if(serial == nullptr) {
+    return ERR_DOES_NOT_EXIST;
+  }
+
+  Error result = OK;
+  sp_return err = sp_blocking_read(serial, p_buffer, bytes, 0);
+  if(err < 0) {
+    _defer_error(__FUNCTION__, err);
+    result = ERR_FILE_CANT_READ;
+  }
+
+  *r_received = std::max(static_cast<int32_t>(err), 0);
+
+  //UtilityFunctions::print(port_name, "._get_data(", bytes, ") -> ", *r_received);
   return result;
 }
 
@@ -334,13 +415,10 @@ Error StreamPeerSerial::_get_partial_data(uint8_t *p_buffer, int32_t bytes, int3
 
 
 size_t StreamPeerSerial::write_raw(const PackedByteArray &data) {
-   serialerror_t err = serialerror_success;
-   auto retVal = serial->write(data.ptr(), data.size(), &err);
-   if(err != serialerror_success) {
-     call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
-   }
- 
-   return retVal;
+  int32_t sent = 0;
+  (void) _put_data(data.ptr(), static_cast<int32_t>(data.size()), &sent);
+  //UtilityFunctions::print(port_name, ".write_raw(", data.size(), ") -> ", sent);
+  return sent;
 }
 
 
@@ -349,192 +427,105 @@ Error StreamPeerSerial::_put_data(const uint8_t *p_data, int32_t bytes, int32_t 
     return ERR_PARAMETER_RANGE_ERROR;
   }
 
-  Error result = OK;
-  serialerror_t err = serialerror_success;
-  do {
-    if(int sent = static_cast<int>(serial->write(p_data, bytes, &err)); sent == 0) {
-       std::this_thread::sleep_for(milliseconds(serial->getTimeout().write_timeout_constant));
-    }
-    else {
-      *r_sent += sent;
-      p_data += sent;
-      bytes -= sent;
-    }
-  } while(err == serialerror_success && bytes > 0);
- 
-  if(err != serialerror_success) {
-    call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
-    switch(err) {
-      case serialerror_not_opened:
-        result = ERR_FILE_CANT_OPEN;
-      break;
-      case serialerror_io_failed:
-        result = ERR_FILE_CANT_READ;
-      break;
-      case serialerror_serial:
-        result = ERR_FILE_CORRUPT;
-      break;
-      default:
-        result = ERR_UNAVAILABLE;
-      break;
-    }
+  if(serial == nullptr) {
+    return ERR_DOES_NOT_EXIST;
   }
 
+  Error result = OK;
+  auto err = sp_blocking_write(serial, p_data, bytes, 0);
+  if(err < 0) {
+    _defer_error(__FUNCTION__, err);
+    result = ERR_FILE_CANT_WRITE;
+  }
+  else {
+    *r_sent = err;
+  }
+
+  //UtilityFunctions::print(port_name, "._put_data(", bytes, ") -> ", *r_sent);
   return result;
 }
 
 
 Error StreamPeerSerial::_put_partial_data(const uint8_t *p_data, int32_t bytes, int32_t *r_sent) {
+  if(bytes < 0) {
+    return ERR_PARAMETER_RANGE_ERROR;
+  }
+
+  if(serial == nullptr) {
+    return ERR_DOES_NOT_EXIST;
+  }
+
   Error result = OK;
-  serialerror_t err = serialerror_success;
-  if((*r_sent = static_cast<int>(serial->write(p_data, bytes, &err))) == 0) {
-    result = ERR_BUSY;
-  }
- 
-  if(err != serialerror_success) {
-    call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
-    switch(err) {
-      case serialerror_not_opened:
-        result = ERR_FILE_CANT_OPEN;
-      break;
-      case serialerror_io_failed:
-        result = ERR_FILE_CANT_READ;
-      break;
-      case serialerror_serial:
-        result = ERR_FILE_CORRUPT;
-      break;
-      default:
-        result = ERR_UNAVAILABLE;
-      break;
-    }
-  }
-
-  return result;
-}
-
-
-String StreamPeerSerial::read_line(size_t max_length, String eol, bool utf8_encoding) {
-  serialerror_t err = serialerror_success;
-  auto line = serial->readline(max_length, eol.utf8().get_data(), &err);
-  if(err != serialerror_success) {
-    call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
-  }
- 
-  return "";
-  if(utf8_encoding) {
-    String str;
-    str.parse_utf8(line.c_str());
-    return str;
-  }
- 
-  return line.c_str();
-}
-
-
-PackedStringArray StreamPeerSerial::read_lines(size_t max_length, String eol, bool utf8_encoding) {
-  PackedStringArray lines;
-  serialerror_t err = serialerror_success;
-  if(utf8_encoding) {
-    for(std::string line : serial->readlines(max_length, eol.utf8().get_data())) {
-      String str;
-      str.parse_utf8(line.c_str());
-      lines.append(str);
-    }
+  auto err = sp_nonblocking_write(serial, p_data, bytes);
+  if(err < 0) {
+    _defer_error(__FUNCTION__, err);
+    result = ERR_FILE_CANT_WRITE;
   }
   else {
-    for(std::string line : serial->readlines(max_length, eol.utf8().get_data())) {
-      lines.append(line.c_str());
-    }
+    *r_sent = err;
   }
- 
-  if(err != serialerror_success) {
-    call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
-  }
- 
-  return lines;
-}
 
-
-Error StreamPeerSerial::set_port(const String &port) {
-  Error result = OK;
-  serialerror_t err = serialerror_success;
-  serial->setPort(port.ascii().get_data(), &err);
-  if(err != serialerror_success) {
-    call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
-    switch(err) {
-      case serialerror_argument:
-        result = ERR_INVALID_PARAMETER;
-      break;
-      case serialerror_io_failed:
-        result = ERR_FILE_CANT_OPEN;
-      break;
-      case serialerror_serial:
-        result = ERR_ALREADY_IN_USE;
-      break;
-      default:
-        result = FAILED;
-      break;
-    }
-  }
- 
+  //UtilityFunctions::print(port_name, "._put_partial_data(", bytes, ") -> ", *r_sent);
   return result;
 }
 
 
 String StreamPeerSerial::get_port() const {
-  serialerror_t err = serialerror_success;
-  auto port = serial->getPort(&err);
-  if(err != serialerror_success) {
-    const_cast<StreamPeerSerial *>(this)->call_deferred(
-       "_on_error", String(__FUNCTION__), String(serial->getLastError().c_str())
-    );
-  }
- 
-  return port.c_str();
+  return port_name;
 }
 
 
-Error StreamPeerSerial::set_timeout(uint32_t timeout) {
-  serial->setTimeout(Timeout::max(), timeout, 0, timeout, 0);
+Error StreamPeerSerial::set_baudrate(int64_t baudrate) {
+  if(serial == nullptr) {
+    return ERR_DOES_NOT_EXIST;
+  }
+
+  auto err = sp_set_baudrate(serial, static_cast<uint32_t>(baudrate));
+  if(err != SP_OK) {
+    _process_error(__FUNCTION__, err);
+    return FAILED;
+  }
+ 
   return OK;
 }
 
 
-uint32_t StreamPeerSerial::get_timeout() const {
-  return serial->getTimeout().read_timeout_constant;
-}
+int64_t StreamPeerSerial::get_baudrate() const {
+  sp_port_config *config = nullptr;
+  int64_t baud = 0;
 
+  if(serial != nullptr) {
+    if(auto err = sp_new_config(&config); err < 0) {
+      _process_error(__FUNCTION__, err);
+    }
+    else if((err = sp_get_config(serial, config)) < 0) {
+      _process_error(__FUNCTION__, err);
+    }
+    else if(int rate = 0; (err = sp_get_config_baudrate(config, &rate)) < 0) {
+      _process_error(__FUNCTION__, err);
+    }
+    else {
+      baud = rate;
+    }
 
-Error StreamPeerSerial::set_baudrate(uint32_t baudrate) {
-   serialerror_t err = serialerror_success;
-   serial->setBaudrate(baudrate, &err);
-   if(err != serialerror_success) {
-     call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
-     return FAILED;
-   }
- 
-   return OK;
-}
-
-
-uint32_t StreamPeerSerial::get_baudrate() const {
-  serialerror_t err = serialerror_success;
-  auto baud = serial->getBaudrate(&err);
-  if(err != serialerror_success) {
-    const_cast<StreamPeerSerial *>(this)->call_deferred(
-       "_on_error", String(__FUNCTION__), String(serial->getLastError().c_str())
-    );
+    if(config != nullptr) {
+      sp_free_config(config);
+      config = nullptr;
+    }
   }
- 
+
   return baud;
 }
 
 
-Error StreamPeerSerial::set_bytesize(ByteSize bytesize) {
-  serialerror_t err = serialerror_success;
-  serial->setBytesize(bytesize_t(bytesize), &err);
-  if(err != serialerror_success) {
-    call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
+Error StreamPeerSerial::set_data_bits(int64_t bits) {
+  if(serial == nullptr) {
+    return ERR_DOES_NOT_EXIST;
+  }
+
+  auto err = sp_set_bits(serial, static_cast<int>(bits));
+  if(err != SP_OK) {
+    _process_error(__FUNCTION__, err);
     return FAILED;
   }
  
@@ -542,49 +533,42 @@ Error StreamPeerSerial::set_bytesize(ByteSize bytesize) {
 }
 
 
-StreamPeerSerial::ByteSize StreamPeerSerial::get_bytesize() const {
-  serialerror_t err = serialerror_success;
-  auto sz = ByteSize(serial->getBytesize(&err));
-  if(err != serialerror_success) {
-    const_cast<StreamPeerSerial *>(this)->call_deferred(
-       "_on_error", String(__FUNCTION__), String(serial->getLastError().c_str())
-    );
+int64_t StreamPeerSerial::get_data_bits() const {
+  sp_port_config *config = nullptr;
+  int64_t data = 0;
+
+  if(serial != nullptr) {
+    if(auto err = sp_new_config(&config); err < 0) {
+      _process_error(__FUNCTION__, err);
+    }
+    else if((err = sp_get_config(serial, config)) < 0) {
+      _process_error(__FUNCTION__, err);
+    }
+    else if(int bits = 0; (err = sp_get_config_bits(config, &bits)) < 0) {
+      _process_error(__FUNCTION__, err);
+    }
+    else {
+      data = bits;
+    }
+
+    if(config != nullptr) {
+      sp_free_config(config);
+      config = nullptr;
+    }
   }
- 
-  return sz;
+
+  return data;
 }
 
 
-Error StreamPeerSerial::set_parity(Parity parity) {
-  serialerror_t err = serialerror_success;
-  serial->setParity(parity_t(parity), &err);
-  if(err != serialerror_success) {
-    call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
-    return FAILED;
+Error StreamPeerSerial::set_parity(SerialPortConfig::Parity parity) {
+  if(serial == nullptr) {
+    return ERR_DOES_NOT_EXIST;
   }
 
-  return OK;
-}
-
-
-StreamPeerSerial::Parity StreamPeerSerial::get_parity() const {
-  serialerror_t err = serialerror_success;
-  auto par = Parity(serial->getParity(&err));
-  if(err != serialerror_success) {
-    const_cast<StreamPeerSerial *>(this)->call_deferred(
-       "_on_error", String(__FUNCTION__), String(serial->getLastError().c_str())
-    );
-  }
- 
-  return par;
-}
-
-
-Error StreamPeerSerial::set_stopbits(StopBits stopbits) {
-  serialerror_t err = serialerror_success;
-  serial->setStopbits(stopbits_t(stopbits), &err);
-  if(err != serialerror_success) {
-    call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
+  auto err = sp_set_parity(serial, static_cast<sp_parity>(parity));
+  if(err != SP_OK) {
+    _process_error(__FUNCTION__, err);
     return FAILED;
   }
  
@@ -592,24 +576,42 @@ Error StreamPeerSerial::set_stopbits(StopBits stopbits) {
 }
 
 
-StreamPeerSerial::StopBits StreamPeerSerial::get_stopbits() const {
-  serialerror_t err = serialerror_success;
-  auto bits = StopBits(serial->getStopbits(&err));
-  if(err != serialerror_success) {
-    const_cast<StreamPeerSerial *>(this)->call_deferred(
-       "_on_error", String(__FUNCTION__), String(serial->getLastError().c_str())
-    );
+SerialPortConfig::Parity StreamPeerSerial::get_parity() const {
+  sp_port_config *config = nullptr;
+  SerialPortConfig::Parity parity = SerialPortConfig::INVALID_PARITY;
+
+  if(serial != nullptr) {
+    if(auto err = sp_new_config(&config); err < 0) {
+      _process_error(__FUNCTION__, err);
+    }
+    else if((err = sp_get_config(serial, config)) < 0) {
+      _process_error(__FUNCTION__, err);
+    }
+    else if(sp_parity par = SP_PARITY_INVALID; (err = sp_get_config_parity(config, &par)) < 0) {
+      _process_error(__FUNCTION__, err);
+    }
+    else {
+      parity = static_cast<SerialPortConfig::Parity>(par);
+    }
+
+    if(config != nullptr) {
+      sp_free_config(config);
+      config = nullptr;
+    }
   }
- 
-  return bits;
+
+  return parity;
 }
 
 
-Error StreamPeerSerial::set_flowcontrol(FlowControl flowcontrol) {
-  serialerror_t err = serialerror_success;
-  serial->setFlowcontrol(flowcontrol_t(flowcontrol), &err);
-  if(err != serialerror_success) {
-    call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
+Error StreamPeerSerial::set_stop_bits(int64_t bits) {
+  if(serial == nullptr) {
+    return ERR_DOES_NOT_EXIST;
+  }
+
+  auto err = sp_set_stopbits(serial, static_cast<int>(bits));
+  if(err != SP_OK) {
+    _process_error(__FUNCTION__, err);
     return FAILED;
   }
  
@@ -617,22 +619,104 @@ Error StreamPeerSerial::set_flowcontrol(FlowControl flowcontrol) {
 }
 
 
-StreamPeerSerial::FlowControl StreamPeerSerial::get_flowcontrol() const {
-  serialerror_t err = serialerror_success;
-  auto flow = FlowControl(serial->getFlowcontrol(&err));
-  if(err != serialerror_success) {
-    const_cast<StreamPeerSerial *>(this)->call_deferred(
-       "_on_error", String(__FUNCTION__), String(serial->getLastError().c_str())
-    );
+int64_t StreamPeerSerial::get_stop_bits() const {
+  sp_port_config *config = nullptr;
+  int64_t data = 0;
+
+  if(serial != nullptr) {
+    if(auto err = sp_new_config(&config); err < 0) {
+      _process_error(__FUNCTION__, err);
+    }
+    else if((err = sp_get_config(serial, config)) < 0) {
+      _process_error(__FUNCTION__, err);
+    }
+    else if(int bits = 0; (err = sp_get_config_stopbits(config, &bits)) < 0) {
+      _process_error(__FUNCTION__, err);
+    }
+    else {
+      data = bits;
+    }
+
+    if(config != nullptr) {
+      sp_free_config(config);
+      config = nullptr;
+    }
+  }
+
+  return data;
+}
+
+
+Error StreamPeerSerial::set_flow_control(SerialPortConfig::FlowControl flow) {
+  if(serial == nullptr) {
+    return ERR_DOES_NOT_EXIST;
+  }
+
+  auto err = sp_set_flowcontrol(serial, static_cast<sp_flowcontrol>(flow));
+  if(err != SP_OK) {
+    _process_error(__FUNCTION__, err);
+    return FAILED;
   }
  
-  return flow;
+  return OK;
 }
 
 
 Error StreamPeerSerial::flush() {
-  if(serial->flush() != serialerror_success) {
-    call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
+  if(serial == nullptr) {
+    return ERR_DOES_NOT_EXIST;
+  }
+
+  if(auto err = sp_drain(serial); err < 0) {
+    _process_error(__FUNCTION__, err);
+    return ERR_FILE_CANT_WRITE;
+  }
+
+  return OK;
+}
+
+
+Error StreamPeerSerial::apply_config(const Ref<SerialPortConfig> &config) {
+  if(serial == nullptr) {
+    return ERR_DOES_NOT_EXIST;
+  }
+
+  if(config.is_null()) {
+    return ERR_INVALID_PARAMETER;
+  }
+
+  if(auto err = sp_set_config(serial, config->ptr()); err < 0) {
+    _process_error(__FUNCTION__, err);
+    return ERR_FILE_CANT_WRITE;
+  }
+
+  return OK;
+}
+
+
+Ref<SerialPortConfig> StreamPeerSerial::get_config() {
+  Ref<SerialPortConfig> config;
+
+  if(serial != nullptr) {
+    config.instantiate();
+    if(auto err = sp_get_config(serial, config->ptr()); err != SP_OK) {
+      _process_error(__FUNCTION__, err);
+      config.unref();
+    }
+  }
+
+  return config;
+}
+
+
+Error StreamPeerSerial::set_rts(SerialPortConfig::Rts level) {
+  if(serial == nullptr) {
+    return ERR_DOES_NOT_EXIST;
+  }
+
+  auto err = sp_set_rts(serial, static_cast<sp_rts>(level));
+  if(err != SP_OK) {
+    _process_error(__FUNCTION__, err);
     return FAILED;
   }
 
@@ -640,9 +724,14 @@ Error StreamPeerSerial::flush() {
 }
 
 
-Error StreamPeerSerial::flush_input() {
-  if(serial->flushInput() != serialerror_success) {
-    call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
+Error StreamPeerSerial::set_cts(SerialPortConfig::Cts level) {
+  if(serial == nullptr) {
+    return ERR_DOES_NOT_EXIST;
+  }
+
+  auto err = sp_set_cts(serial, static_cast<sp_cts>(level));
+  if(err != SP_OK) {
+    _process_error(__FUNCTION__, err);
     return FAILED;
   }
 
@@ -650,9 +739,14 @@ Error StreamPeerSerial::flush_input() {
 }
 
 
-Error StreamPeerSerial::flush_output() {
-  if(serial->flushOutput() != serialerror_success) {
-    call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
+Error StreamPeerSerial::set_dtr(SerialPortConfig::Dtr level) {
+  if(serial == nullptr) {
+    return ERR_DOES_NOT_EXIST;
+  }
+
+  auto err = sp_set_dtr(serial, static_cast<sp_dtr>(level));
+  if(err != SP_OK) {
+    _process_error(__FUNCTION__, err);
     return FAILED;
   }
 
@@ -660,204 +754,170 @@ Error StreamPeerSerial::flush_output() {
 }
 
 
-Error StreamPeerSerial::send_break(int duration) {
-  if(serial->sendBreak(duration) != serialerror_success) {
-    call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
+Error StreamPeerSerial::set_dsr(SerialPortConfig::Dsr level) {
+  if(serial == nullptr) {
+    return ERR_DOES_NOT_EXIST;
+  }
+
+  auto err = sp_set_dsr(serial, static_cast<sp_dsr>(level));
+  if(err != SP_OK) {
+    _process_error(__FUNCTION__, err);
     return FAILED;
   }
 
   return OK;
-}
-
-
-Error StreamPeerSerial::set_break(bool level) {
-  if(serial->setBreak(level) != serialerror_success) {
-    call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
-    return FAILED;
-  }
-
-  return OK;
-}
-
-
-Error StreamPeerSerial::set_rts(bool level) {
-  if(serial->setRTS(level) != serialerror_success) {
-    call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
-    return FAILED;
-  }
-
-  return OK;
-}
-
-
-Error StreamPeerSerial::set_dtr(bool level) {
-  if(serial->setDTR(level) != serialerror_success) {
-    call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
-    return FAILED;
-  }
-
-  return OK;
-}
-
-
-bool StreamPeerSerial::wait_for_change() {
-  serialerror_t err = serialerror_success;
-  auto result = serial->waitForChange(&err);
-  if(err != serialerror_success) {
-    call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
-  }
-
-  return result;
 }
 
 
 bool StreamPeerSerial::get_cts() {
-  serialerror_t err = serialerror_success;
-  auto result = serial->getCTS(&err);
-  if(err != serialerror_success) {
-    call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
+  if(serial == nullptr) {
+    return false;
   }
 
-  return result;
+  sp_signal mask = static_cast<sp_signal>(0);
+  auto err = sp_get_signals(serial, &mask);
+  if(err != SP_OK) {
+    _process_error(__FUNCTION__, err);
+    return false;
+  }
+
+  return (mask & SP_SIG_CTS) != 0;
 }
 
 
 bool StreamPeerSerial::get_dsr() {
-  serialerror_t err = serialerror_success;
-  auto result = serial->getDSR(&err);
-  if(err != serialerror_success) {
-    call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
+  if(serial == nullptr) {
+    return false;
   }
 
-  return result;
+  sp_signal mask = static_cast<sp_signal>(0);
+  auto err = sp_get_signals(serial, &mask);
+  if(err != SP_OK) {
+    _process_error(__FUNCTION__, err);
+    return false;
+  }
+
+  return (mask & SP_SIG_DSR) != 0;
 }
 
 
 bool StreamPeerSerial::get_ri() {
-  serialerror_t err = serialerror_success;
-  auto result = serial->getRI(&err);
-  if(err != serialerror_success) {
-    call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
+  if(serial == nullptr) {
+    return false;
   }
 
-  return result;
+  sp_signal mask = static_cast<sp_signal>(0);
+  auto err = sp_get_signals(serial, &mask);
+  if(err != SP_OK) {
+    _process_error(__FUNCTION__, err);
+    return false;
+  }
+
+  return (mask & SP_SIG_RI) != 0;
 }
 
 
 bool StreamPeerSerial::get_cd() {
-  serialerror_t err = serialerror_success;
-  auto result = serial->getCD(&err);
-  if(err != serialerror_success) {
-    call_deferred("_on_error", String(__FUNCTION__), String(serial->getLastError().c_str()));
+  if(serial == nullptr) {
+    return false;
   }
 
-  return result;
+  sp_signal mask = static_cast<sp_signal>(0);
+  auto err = sp_get_signals(serial, &mask);
+  if(err != SP_OK) {
+    _process_error(__FUNCTION__, err);
+    return false;
+  }
+
+  return (mask & SP_SIG_DCD) != 0;
 }
 
 
 String StreamPeerSerial::_to_string() const {
   Dictionary ser_info;
   ser_info["port"] = get_port();
-  ser_info["baudrate"] = get_baudrate();
-  ser_info["byte_size"] = get_bytesize();
-  ser_info["parity"] = get_parity();
-  ser_info["stop_bits"] = get_stopbits();
+  if(serial != nullptr) {
+    sp_port_config *config = nullptr;
+    if(auto err = sp_new_config(&config); err < 0) {
+      _process_error(__FUNCTION__, err);
+    }
+    else if((err = sp_get_config(serial, config)) < 0) {
+      _process_error(__FUNCTION__, err);
+    }
+    else if(int rate = 0; (err = sp_get_config_baudrate(config, &rate)) < 0) {
+      _process_error(__FUNCTION__, err);
+    }
+    else if(int data = 0; (err = sp_get_config_bits(config, &data)) < 0) {
+      _process_error(__FUNCTION__, err);
+    }
+    else if(sp_parity par = SP_PARITY_INVALID; (err = sp_get_config_parity(config, &par)) < 0) {
+      _process_error(__FUNCTION__, err);
+    }
+    else if(int stop = 0; (err = sp_get_config_stopbits(config, &stop)) < 0) {
+      _process_error(__FUNCTION__, err);
+    }
+    else {
+      ser_info["baudrate"]  = rate;
+      ser_info["data_bits"] = data;
+      ser_info["parity"]    = par;
+      ser_info["stop_bits"] = stop;
+    }
+
+    if(config != nullptr) {
+      sp_free_config(config);
+      config = nullptr;
+    }
+  }
 
   return String("[StreamPeerSerial: {_}]").format(ser_info);
 }
 
 
 void StreamPeerSerial::_bind_methods() {
-  ClassDB::bind_static_method("StreamPeerSerial", D_METHOD("list_ports"), &StreamPeerSerial::list_ports);
-  ClassDB::bind_static_method("StreamPeerSerial", D_METHOD("open_port", "port", "baudrate", "timeout", "bytesize", "parity", "stopbits", "flowcontrol"), &StreamPeerSerial::open_port, DEFVAL(9600U), DEFVAL(0U), DEFVAL(BYTESIZE_8), DEFVAL(PARITY_NONE), DEFVAL(STOPBITS_1), DEFVAL(FLOWCONTROL_NONE));
+  ClassDB::bind_static_method("StreamPeerSerial", D_METHOD("list_ports"),                  &StreamPeerSerial::list_ports);
+  ClassDB::bind_static_method("StreamPeerSerial", D_METHOD("open_port", "port", "config"), &StreamPeerSerial::open_port);
 
-  ClassDB::bind_method(D_METHOD("_data_received", "data"), &StreamPeerSerial::_data_received);
-  ClassDB::bind_method(D_METHOD("_on_error", "where", "what"), &StreamPeerSerial::_on_error);
-  ClassDB::bind_method(D_METHOD("is_in_error"), &StreamPeerSerial::is_in_error);
-  ClassDB::bind_method(D_METHOD("get_last_error"), &StreamPeerSerial::get_last_error);
+  ClassDB::bind_method(D_METHOD("_data_received", "data"),          &StreamPeerSerial::_data_received);
+  ClassDB::bind_method(D_METHOD("_on_error",      "where", "what"), &StreamPeerSerial::_on_error);
 
-  ClassDB::bind_method(D_METHOD("start_monitoring", "interval_in_usec"), &StreamPeerSerial::start_monitoring, DEFVAL(10000));
-  ClassDB::bind_method(D_METHOD("stop_monitoring"), &StreamPeerSerial::stop_monitoring);
+  ClassDB::bind_method(D_METHOD("start_monitoring", "msec"), &StreamPeerSerial::start_monitoring, DEFVAL(50));
+  ClassDB::bind_method(D_METHOD("stop_monitoring"),          &StreamPeerSerial::stop_monitoring);
 
-  ClassDB::bind_method(D_METHOD("open", "port"), &StreamPeerSerial::open, DEFVAL(""));
-  ClassDB::bind_method(D_METHOD("is_open"), &StreamPeerSerial::is_open);
-  ClassDB::bind_method(D_METHOD("close"), &StreamPeerSerial::close);
+  ClassDB::bind_method(D_METHOD("open", "port"), &StreamPeerSerial::open);
+  ClassDB::bind_method(D_METHOD("is_open"),      &StreamPeerSerial::is_open);
+  ClassDB::bind_method(D_METHOD("close"),        &StreamPeerSerial::close);
 
-  ClassDB::bind_method(D_METHOD("wait_readable"), &StreamPeerSerial::wait_readable);
-  ClassDB::bind_method(D_METHOD("wait_byte_times", "count"), &StreamPeerSerial::wait_byte_times);
-  ClassDB::bind_method(D_METHOD("read_raw", "size"), &StreamPeerSerial::read_raw, DEFVAL(1));
+  ClassDB::bind_method(D_METHOD("wait_readable"),     &StreamPeerSerial::wait_readable);
+  ClassDB::bind_method(D_METHOD("wait_writable"),     &StreamPeerSerial::wait_writable);
+  ClassDB::bind_method(D_METHOD("read_raw", "size"),  &StreamPeerSerial::read_raw, DEFVAL(1));
   ClassDB::bind_method(D_METHOD("write_raw", "data"), &StreamPeerSerial::write_raw);
-  ClassDB::bind_method(D_METHOD("read_line", "max_len", "eol", "utf8_encoding"), &StreamPeerSerial::read_line, DEFVAL(65535), DEFVAL("\n"), DEFVAL(false));
-  ClassDB::bind_method(D_METHOD("read_lines", "max_len", "eol", "utf8_encoding"), &StreamPeerSerial::read_lines, DEFVAL(65535), DEFVAL("\n"), DEFVAL(false));
 
-  ClassDB::bind_method(D_METHOD("set_port", "port"), &StreamPeerSerial::set_port);
-  ClassDB::bind_method(D_METHOD("get_port"), &StreamPeerSerial::get_port);
-  ClassDB::bind_method(D_METHOD("set_baudrate", "baudrate"), &StreamPeerSerial::set_baudrate);
-  ClassDB::bind_method(D_METHOD("get_baudrate"), &StreamPeerSerial::get_baudrate);
-  ClassDB::bind_method(D_METHOD("set_timeout", "timeout"), &StreamPeerSerial::set_timeout);
-  ClassDB::bind_method(D_METHOD("get_timeout"), &StreamPeerSerial::get_timeout);
-  ClassDB::bind_method(D_METHOD("set_bytesize", "bytesize"), &StreamPeerSerial::set_bytesize);
-  ClassDB::bind_method(D_METHOD("get_bytesize"), &StreamPeerSerial::get_bytesize);
-  ClassDB::bind_method(D_METHOD("set_parity", "parity"), &StreamPeerSerial::set_parity);
-  ClassDB::bind_method(D_METHOD("get_parity"), &StreamPeerSerial::get_parity);
-  ClassDB::bind_method(D_METHOD("set_stopbits", "stopbits"), &StreamPeerSerial::set_stopbits);
-  ClassDB::bind_method(D_METHOD("get_stopbits"), &StreamPeerSerial::get_stopbits);
-  ClassDB::bind_method(D_METHOD("set_flowcontrol", "flowcontrol"), &StreamPeerSerial::set_flowcontrol);
-  ClassDB::bind_method(D_METHOD("get_flowcontrol"), &StreamPeerSerial::get_flowcontrol);
+  ClassDB::bind_method(D_METHOD("get_port"),                   &StreamPeerSerial::get_port);
+  ClassDB::bind_method(D_METHOD("get_config"),                 &StreamPeerSerial::get_config);
+  ClassDB::bind_method(D_METHOD("set_config",       "config"), &StreamPeerSerial::apply_config);
+  ClassDB::bind_method(D_METHOD("set_baudrate",     "rate"),   &StreamPeerSerial::set_baudrate);
+  ClassDB::bind_method(D_METHOD("get_baudrate"),               &StreamPeerSerial::get_baudrate);
+  ClassDB::bind_method(D_METHOD("set_data_bits",    "bits"),   &StreamPeerSerial::set_data_bits);
+  ClassDB::bind_method(D_METHOD("get_data_bits"),              &StreamPeerSerial::get_data_bits);
+  ClassDB::bind_method(D_METHOD("set_parity",       "parity"), &StreamPeerSerial::set_parity);
+  ClassDB::bind_method(D_METHOD("get_parity"),                 &StreamPeerSerial::get_parity);
+  ClassDB::bind_method(D_METHOD("set_stop_bits",    "bits"),   &StreamPeerSerial::set_stop_bits);
+  ClassDB::bind_method(D_METHOD("get_stop_bits"),              &StreamPeerSerial::get_stop_bits);
+  ClassDB::bind_method(D_METHOD("set_flow_control", "flow"),   &StreamPeerSerial::set_flow_control);
 
-  ClassDB::bind_method(D_METHOD("flush"), &StreamPeerSerial::flush);
-  ClassDB::bind_method(D_METHOD("flush_input"), &StreamPeerSerial::flush_input);
-  ClassDB::bind_method(D_METHOD("flush_output"), &StreamPeerSerial::flush_output);
-  ClassDB::bind_method(D_METHOD("send_break", "duration"), &StreamPeerSerial::send_break);
-  ClassDB::bind_method(D_METHOD("set_break", "level"), &StreamPeerSerial::set_break, DEFVAL(true));
-  ClassDB::bind_method(D_METHOD("set_rts", "level"), &StreamPeerSerial::set_rts, DEFVAL(true));
-  ClassDB::bind_method(D_METHOD("set_dtr", "level"), &StreamPeerSerial::set_dtr, DEFVAL(true));
-  ClassDB::bind_method(D_METHOD("wait_for_change"), &StreamPeerSerial::wait_for_change);
-  ClassDB::bind_method(D_METHOD("get_cts"), &StreamPeerSerial::get_cts);
-  ClassDB::bind_method(D_METHOD("get_dsr"), &StreamPeerSerial::get_dsr);
-  ClassDB::bind_method(D_METHOD("get_ri"), &StreamPeerSerial::get_ri);
-  ClassDB::bind_method(D_METHOD("get_cd"), &StreamPeerSerial::get_cd);
+  ClassDB::bind_method(D_METHOD("flush"),            &StreamPeerSerial::flush);
+  ClassDB::bind_method(D_METHOD("set_rts", "level"), &StreamPeerSerial::set_rts, DEFVAL(SerialPortConfig::RTS_ON));
+  ClassDB::bind_method(D_METHOD("set_cts", "level"), &StreamPeerSerial::set_rts, DEFVAL(SerialPortConfig::CTS_FLOW));
+  ClassDB::bind_method(D_METHOD("set_dtr", "level"), &StreamPeerSerial::set_dtr, DEFVAL(SerialPortConfig::DTR_ON));
+  ClassDB::bind_method(D_METHOD("set_dsr", "level"), &StreamPeerSerial::set_dtr, DEFVAL(SerialPortConfig::DSR_FLOW));
+  ClassDB::bind_method(D_METHOD("get_cts"),          &StreamPeerSerial::get_cts);
+  ClassDB::bind_method(D_METHOD("get_dsr"),          &StreamPeerSerial::get_dsr);
+  ClassDB::bind_method(D_METHOD("get_ri"),           &StreamPeerSerial::get_ri);
+  ClassDB::bind_method(D_METHOD("get_cd"),           &StreamPeerSerial::get_cd);
 
-  ADD_PROPERTY(PropertyInfo(Variant::STRING, "port"), "set_port", "get_port");
-  ADD_PROPERTY(PropertyInfo(Variant::INT, "baudrate"), "set_baudrate", "get_baudrate");
-  ADD_PROPERTY(PropertyInfo(Variant::INT, "timeout"), "set_timeout", "get_timeout");
-  ADD_PROPERTY(PropertyInfo(Variant::INT, "bytesize", PROPERTY_HINT_ENUM, "5, 6, 7, 8"), "set_bytesize", "get_bytesize");
-  ADD_PROPERTY(PropertyInfo(Variant::INT, "parity", PROPERTY_HINT_ENUM, "None, Odd, Even, Mark, Space"), "set_parity", "get_parity");
-  ADD_PROPERTY(PropertyInfo(Variant::INT, "stopbits", PROPERTY_HINT_ENUM, "1, 2, 1.5"), "set_stopbits", "get_stopbits");
-  ADD_PROPERTY(PropertyInfo(Variant::INT, "flowcontrol", PROPERTY_HINT_ENUM, "None, Software, Hardware"), "set_flowcontrol", "get_flowcontrol");
-
-#ifndef GDEXTENSION
-  ADD_PROPERTY_DEFAULT("port", "");
-  ADD_PROPERTY_DEFAULT("baudrate", 9600);
-  ADD_PROPERTY_DEFAULT("timeout", 0);
-  ADD_PROPERTY_DEFAULT("bytesize", BYTESIZE_8);
-  ADD_PROPERTY_DEFAULT("parity", PARITY_NONE);
-  ADD_PROPERTY_DEFAULT("stopbits", STOPBITS_1);
-  ADD_PROPERTY_DEFAULT("flowcontrol", FLOWCONTROL_NONE);
-#endif
-
-  ADD_SIGNAL(MethodInfo("got_error", PropertyInfo(Variant::STRING, "where"), PropertyInfo(Variant::STRING, "what")));
-  ADD_SIGNAL(MethodInfo("opened", PropertyInfo(Variant::STRING, "port")));
+  ADD_SIGNAL(MethodInfo("got_error",     PropertyInfo(Variant::STRING,            "where"), PropertyInfo(Variant::STRING, "what")));
+  ADD_SIGNAL(MethodInfo("opened",        PropertyInfo(Variant::STRING,            "port")));
   ADD_SIGNAL(MethodInfo("data_received", PropertyInfo(Variant::PACKED_BYTE_ARRAY, "data")));
-  ADD_SIGNAL(MethodInfo("closed", PropertyInfo(Variant::STRING, "port")));
-
-  BIND_ENUM_CONSTANT(BYTESIZE_5);
-  BIND_ENUM_CONSTANT(BYTESIZE_6);
-  BIND_ENUM_CONSTANT(BYTESIZE_7);
-  BIND_ENUM_CONSTANT(BYTESIZE_8);
-
-  BIND_ENUM_CONSTANT(PARITY_NONE);
-  BIND_ENUM_CONSTANT(PARITY_ODD);
-  BIND_ENUM_CONSTANT(PARITY_EVEN);
-  BIND_ENUM_CONSTANT(PARITY_MARK);
-  BIND_ENUM_CONSTANT(PARITY_SPACE);
-
-  BIND_ENUM_CONSTANT(STOPBITS_1);
-  BIND_ENUM_CONSTANT(STOPBITS_2);
-  BIND_ENUM_CONSTANT(STOPBITS_1P5);
-
-  BIND_ENUM_CONSTANT(FLOWCONTROL_NONE);
-  BIND_ENUM_CONSTANT(FLOWCONTROL_SOFTWARE);
-  BIND_ENUM_CONSTANT(FLOWCONTROL_HARDWARE);
+  ADD_SIGNAL(MethodInfo("closed",        PropertyInfo(Variant::STRING,            "port")));
 }
 
