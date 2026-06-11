@@ -2,7 +2,14 @@
 
 
 SerialPortConfig::SerialPortConfig() {
-  sp_new_config(&_config);
+  // on successful creation default to an arduino compatible setup
+  if(sp_new_config(&_config) == SP_OK) {
+    // 8N1 without flow control
+    sp_set_config_bits(_config, 8);
+    sp_set_config_parity(_config, SP_PARITY_NONE);
+    sp_set_config_stopbits(_config, 1);
+    sp_set_config_flowcontrol(_config, SP_FLOWCONTROL_NONE);
+  }
 }
 
 
